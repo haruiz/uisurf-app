@@ -1,0 +1,293 @@
+"use client";
+
+import { useEffect } from "react";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import ChatBubbleOutlineRoundedIcon from "@mui/icons-material/ChatBubbleOutlineRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import KeyboardDoubleArrowLeftRoundedIcon from "@mui/icons-material/KeyboardDoubleArrowLeftRounded";
+import KeyboardDoubleArrowRightRoundedIcon from "@mui/icons-material/KeyboardDoubleArrowRightRounded";
+import {
+  Box,
+  CircularProgress,
+  Divider,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Paper,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import { alpha } from "@mui/material/styles";
+
+import { useCreateChatSession, useDeleteChatSession, useChatSessions } from "@/hooks/use-chat-sessions";
+import { useChatStore } from "@/store/chat-store";
+
+export function ChatSidebar({ token }: { token?: string }) {
+  const { selectedChatId, setSelectedChatId, sidebarOpen, toggleSidebar, loadingViewerChatIds } = useChatStore();
+  const sessionsQuery = useChatSessions(token);
+  const createSession = useCreateChatSession(token);
+  const deleteSession = useDeleteChatSession(token);
+
+  useEffect(() => {
+    const sessions = sessionsQuery.data?.items ?? [];
+    if (sessions.length === 0) {
+      if (selectedChatId) {
+        setSelectedChatId(null);
+      }
+      return;
+    }
+
+    const selectedExists = sessions.some((session) => session.id === selectedChatId);
+    if (!selectedChatId || !selectedExists) {
+      setSelectedChatId(sessions[0].id);
+    }
+  }, [selectedChatId, sessionsQuery.data?.items, setSelectedChatId]);
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        p: 2,
+        borderRadius: 1.5,
+        border: "1px solid",
+        borderColor: "divider",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Stack
+        direction={sidebarOpen ? "row" : "column"}
+        alignItems={sidebarOpen ? "center" : "center"}
+        justifyContent="space-between"
+        spacing={sidebarOpen ? 1 : 2}
+        sx={{ mb: 1 }}
+      >
+        <Stack direction={sidebarOpen ? "row" : "column"} spacing={1} alignItems="center">
+          {!sidebarOpen ? (
+            <Tooltip title="Expand panel">
+              <IconButton
+                onClick={toggleSidebar}
+                color="inherit"
+                sx={{
+                  width: 40,
+                  height: 40,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.02 : 0.04),
+                }}
+              >
+                <KeyboardDoubleArrowRightRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          {sidebarOpen ? (
+            <Tooltip title="Collapse panel">
+              <IconButton
+                onClick={toggleSidebar}
+                color="inherit"
+                sx={{
+                  width: 40,
+                  height: 40,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.02 : 0.04),
+                }}
+              >
+                <KeyboardDoubleArrowLeftRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+        </Stack>
+
+        {sidebarOpen ? (
+          <>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.18em" }}>
+                Browser
+              </Typography>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                Sessions
+              </Typography>
+            </Box>
+            <Tooltip title="New chat">
+              <IconButton
+                color="primary"
+                onClick={() => createSession.mutate(`New session ${new Date().toLocaleTimeString()}`)}
+                sx={{
+                  width: 40,
+                  height: 40,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.02 : 0.04),
+                }}
+              >
+                <AddRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </>
+        ) : (
+          <IconButton color="primary">
+            <ChatBubbleOutlineRoundedIcon />
+          </IconButton>
+        )}
+      </Stack>
+
+      {sidebarOpen ? <Divider sx={{ mb: 1.5 }} /> : null}
+
+      {!sidebarOpen ? (
+        <Stack spacing={1.5} alignItems="center">
+          {sessionsQuery.data?.items.map((session) => (
+            <IconButton
+              key={session.id}
+              color={session.id === selectedChatId ? "primary" : "default"}
+              onClick={() => setSelectedChatId(session.id)}
+              sx={{
+                width: 48,
+                height: 48,
+                border: "1px solid",
+                borderColor: session.id === selectedChatId ? "primary.main" : "divider",
+                bgcolor: (theme) =>
+                  session.id === selectedChatId ? alpha(theme.palette.primary.main, 0.12) : "transparent",
+              }}
+            >
+              {loadingViewerChatIds.includes(session.id) ? <CircularProgress size={16} /> : <ChatBubbleOutlineRoundedIcon fontSize="small" />}
+            </IconButton>
+          ))}
+        </Stack>
+      ) : sessionsQuery.isLoading ? (
+        <Box sx={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <CircularProgress size={28} />
+        </Box>
+      ) : (
+        <List sx={{ p: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1.25 }}>
+          {sessionsQuery.data?.items.length === 0 ? (
+            <Paper
+              elevation={0}
+              variant="outlined"
+              sx={{
+                borderRadius: 1.5,
+                p: 2,
+                bgcolor: "background.default",
+              }}
+            >
+              <Typography variant="body2" color="text.secondary">
+                No browser sessions yet.
+              </Typography>
+            </Paper>
+          ) : null}
+          {sessionsQuery.data?.items.map((session) => {
+            const viewerLoading = loadingViewerChatIds.includes(session.id);
+            return (
+            <Box
+              key={session.id}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                minHeight: 112,
+                borderRadius: 1.5,
+                border: "1px solid",
+                borderColor: session.id === selectedChatId ? "primary.main" : "divider",
+                bgcolor: (theme) =>
+                  session.id === selectedChatId ? alpha(theme.palette.primary.main, 0.12) : "transparent",
+              }}
+            >
+              <Stack spacing={0.5} sx={{ flex: 1, minWidth: 0 }}>
+                <ListItemButton
+                  selected={session.id === selectedChatId}
+                  onClick={() => setSelectedChatId(session.id)}
+                  sx={{
+                    borderRadius: 1.5,
+                    px: 2,
+                    pt: 1.75,
+                    pb: 0.75,
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 44 }}>
+                    <Box
+                      sx={{
+                        width: 36,
+                      height: 36,
+                      borderRadius: 1,
+                      display: "grid",
+                      placeItems: "center",
+                      bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.04 : 0.06),
+                    }}
+                  >
+                      <ChatBubbleOutlineRoundedIcon fontSize="small" />
+                    </Box>
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={session.title}
+                    secondary={new Date(session.updated_at).toLocaleString()}
+                    primaryTypographyProps={{ fontWeight: 500 }}
+                    secondaryTypographyProps={{ color: "text.secondary", noWrap: true }}
+                  />
+                </ListItemButton>
+
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    pb: 0.5,
+                    gap: 1,
+                  }}
+                >
+                  <Box sx={{ minHeight: 28, display: "flex", alignItems: "center" }}>
+                    {viewerLoading ? (
+                      <Box
+                        sx={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 0.75,
+                          height: 28,
+                          px: 1,
+                          borderRadius: 999,
+                          border: "1px solid",
+                          borderColor: "primary.main",
+                          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1),
+                          color: "primary.main",
+                        }}
+                      >
+                        <CircularProgress size={12} thickness={6} color="inherit" />
+                        <Typography variant="caption" sx={{ fontWeight: 700, letterSpacing: "0.04em" }}>
+                          Booting viewer
+                        </Typography>
+                      </Box>
+                    ) : null}
+                  </Box>
+                  <Tooltip title="Delete session">
+                    <IconButton
+                      size="small"
+                      color="inherit"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        deleteSession.mutate(session.id);
+                      }}
+                      sx={{
+                        width: 28,
+                        height: 28,
+                        mr: 0.5,
+                        border: "1px solid",
+                        borderColor: "divider",
+                      }}
+                    >
+                      <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              </Stack>
+            </Box>
+            );
+          })}
+        </List>
+      )}
+    </Paper>
+  );
+}
