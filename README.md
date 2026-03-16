@@ -136,6 +136,39 @@ FIREBASE_CLIENT_EMAIL=
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ```
 
+### 4. Create a test user
+
+For local development, you can create a Firebase email/password user with:
+
+```bash
+uv run python scripts/create_test_user.py \
+  --email test@example.com \
+  --password "ChangeMe123!" \
+  --display-name "UISurf Test User"
+```
+
+To update the same user if it already exists:
+
+```bash
+uv run python scripts/create_test_user.py \
+  --email test@example.com \
+  --password "ChangeMe123!" \
+  --display-name "UISurf Test User" \
+  --update-if-exists
+```
+
+To create an admin test user:
+
+```bash
+uv run python scripts/create_test_user.py \
+  --email admin@example.com \
+  --password "ChangeMe123!" \
+  --display-name "UISurf Admin" \
+  --admin
+```
+
+This script uses the same Firebase Admin credentials configured for the backend.
+
 ## Environment Variables
 
 ### Backend `.env`
