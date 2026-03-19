@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False
+        case_sensitive=False,
     )
     app_name: str = "UISurf"
     app_version: str = "0.1.0"
@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     google_cloud_project: str | None = None
     google_cloud_location: str = "us-central1"
     vertex_ai_agent_engine_id: str | None = None
+    live_agent_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    live_agent_text_model: str = "gemini-2.0-flash"
+    log_level: str = "INFO"
 
 
     @property

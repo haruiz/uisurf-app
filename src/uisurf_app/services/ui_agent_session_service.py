@@ -75,8 +75,15 @@ class UiAgentSessionService:
         )
 
         def send() -> dict[str, Any]:
-            with request.urlopen(req, timeout=self._timeout_seconds) as response:
-                raw = response.read()
+            try:
+                with request.urlopen(req, timeout=self._timeout_seconds) as response:
+                    raw = response.read()
+            except error.HTTPError as exc:
+                raw_error = exc.read().decode("utf-8", errors="replace").strip()
+                detail = f"UI agent API request failed: {method} {url} -> {exc.code} {exc.reason}"
+                if raw_error:
+                    detail = f"{detail}; response={raw_error}"
+                raise RuntimeError(detail) from exc
             if not raw:
                 return {}
             payload = json.loads(raw.decode("utf-8"))

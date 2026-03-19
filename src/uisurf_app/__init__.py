@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
+
+from uisurf_app.core.config import get_settings
 
 
 def _configure_logging() -> None:
-    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level_name = get_settings().log_level.upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
 
     root_logger = logging.getLogger()
@@ -39,4 +40,3 @@ def _configure_logging() -> None:
 
 
 _configure_logging()
-

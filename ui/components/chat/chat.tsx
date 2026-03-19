@@ -195,7 +195,7 @@ export function Chat({ token }: { token?: string }) {
     const liveMessage = createLiveChatMessage(selectedChatId, payload);
     addMessage(liveMessage);
 
-    if (payload.type !== "debug" && payload.type !== "info") {
+    if (payload.type !== "info") {
       setSendError(null);
     }
 

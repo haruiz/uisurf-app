@@ -28,6 +28,7 @@ Return only the improved prompt text.
 
 class PromptRefineService:
     def __init__(self, *, api_key: str, model: str) -> None:
+
         self._client = genai.Client(api_key=api_key)
         self._model = model
 

@@ -3,6 +3,7 @@
 import { Box, CircularProgress, Paper, Skeleton, Stack, Typography } from "@mui/material";
 
 import { useMessageStore } from "@/store/message-store";
+import type { FunctionResponseData, LiveChatMessage } from "@/types/live-session";
 import { getLiveMessageText } from "@/types/live-session";
 
 import { ChatMessage } from "./chat-message";
@@ -13,14 +14,24 @@ type ChatHistoryProps = {
   canResend?: boolean;
 };
 
+function hasNamedFunctionResponse(
+  message: LiveChatMessage,
+): message is LiveChatMessage & { data: FunctionResponseData } {
+  return (
+    message.type === "function_response" &&
+    !!message.data &&
+    typeof message.data === "object" &&
+    "name" in message.data &&
+    typeof message.data.name === "string"
+  );
+}
+
 export function ChatHistory({ chatId, onResendMessage, canResend = false }: ChatHistoryProps) {
   const messages = useMessageStore((state) => state.messages);
   const isLoadingHistory = useMessageStore((state) => state.isLoadingHistory);
   const isWaitingForResponse = useMessageStore((state) => state.isWaitingForResponse);
   const completedFunctionNames = new Set(
-    messages
-      .filter((message) => message.type === "function_response" && message.data && typeof message.data === "object" && "name" in message.data)
-      .map((message) => String(message.data.name)),
+    messages.filter(hasNamedFunctionResponse).map((message) => message.data.name),
   );
   const latestUserTextMessageId =
     [...messages]

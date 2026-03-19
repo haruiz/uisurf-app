@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import traceback
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketException, status, WebSocketDisconnect
 from google.adk import Runner
@@ -40,9 +39,10 @@ router = APIRouter()
 
 
 def _resolve_live_agent_model() -> str:
-    configured_model = os.getenv("LIVE_AGENT_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+    settings = get_settings()
+    configured_model = settings.live_agent_model
     if "native-audio" in configured_model:
-        text_model = os.getenv("LIVE_AGENT_TEXT_MODEL", "gemini-2.0-flash")
+        text_model = settings.live_agent_text_model
         logger.info(
             "Using text live model %s instead of audio-native model %s for websocket text chat",
             text_model,
@@ -58,7 +58,22 @@ def _build_a2a_url(vnc_url: str | None, path: str) -> str | None:
     parsed = urlparse(vnc_url)
     if not parsed.scheme or not parsed.netloc:
         return None
-    return f"{parsed.scheme}://{parsed.netloc}/{path.strip('/')}/"
+    base_path = parsed.path or "/"
+    if base_path.endswith("/vnc.html"):
+        base_path = base_path[: -len("/vnc.html")]
+    elif base_path.endswith("vnc.html"):
+        base_path = base_path[: -len("vnc.html")]
+    agent_path = f"{base_path.rstrip('/')}/{path.strip('/')}/"
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            agent_path,
+            "",
+            "",
+            "",
+        )
+    )
 
 
 def get_uisurf_agent(vnc_url: str | None) -> Agent:

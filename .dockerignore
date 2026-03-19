@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+node_modules
+ui/node_modules
+ui/.next
+dist
+build
+.env
+.env.*
+sessions.db

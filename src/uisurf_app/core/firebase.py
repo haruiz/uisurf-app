@@ -21,6 +21,7 @@ def get_firebase_app() -> firebase_admin.App:
                 "project_id": settings.firebase_project_id,
                 "client_email": settings.firebase_client_email,
                 "private_key": settings.firebase_private_key.replace("\\n", "\n"),
+                "token_uri": "https://oauth2.googleapis.com/token",
             }
         )
         return firebase_admin.initialize_app(credential=credential, name="adkwebsurf")
@@ -32,4 +33,3 @@ def get_firebase_app() -> firebase_admin.App:
         )
 
     raise RuntimeError("Firebase admin credentials are not configured.")
-

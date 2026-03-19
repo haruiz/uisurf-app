@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import CircularProgress from "@mui/material/CircularProgress";
 import DesktopWindowsRoundedIcon from "@mui/icons-material/DesktopWindowsRounded";
-import { Box, Divider, Paper, Stack, Typography } from "@mui/material";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import { Box, Button, Divider, Paper, Stack, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 
 const IFRAME_LOAD_TIMEOUT_MS = 15000;
@@ -33,12 +34,33 @@ export function VncPanel({
       if (!url.searchParams.has("resize")) {
         url.searchParams.set("resize", "scale");
       }
+      if (!url.searchParams.has("path")) {
+        const basePath = url.pathname.endsWith("/vnc.html")
+          ? url.pathname.slice(0, -"/vnc.html".length)
+          : url.pathname;
+        const derivedPath = basePath && basePath !== "/"
+          ? `${basePath.replace(/^\/+/, "").replace(/\/+$/, "")}/websockify`
+          : "websockify";
+        url.searchParams.set("path", derivedPath);
+      }
       return url.toString();
     } catch {
       const separator = viewerUrl.includes("?") ? "&" : "?";
       return `${viewerUrl}${separator}autoconnect=1&resize=scale`;
     }
   }, [viewerUrl]);
+
+  const mixedContentBlocked = useMemo(() => {
+    if (!resolvedViewerUrl || typeof window === "undefined") {
+      return false;
+    }
+    try {
+      const url = new URL(resolvedViewerUrl);
+      return window.location.protocol === "https:" && url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }, [resolvedViewerUrl]);
 
   useEffect(() => {
     if (loadTimeoutRef.current !== null) {
@@ -117,7 +139,7 @@ export function VncPanel({
               overflow: "hidden",
             }}
           >
-            {resolvedViewerUrl ? (
+            {resolvedViewerUrl && !mixedContentBlocked ? (
               <>
                 <Box
                   component="iframe"
@@ -169,15 +191,33 @@ export function VncPanel({
               <Stack spacing={2} alignItems="center" justifyContent="center" sx={{ height: "100%" }}>
                 {resolvedViewerUrl || viewerPending ? <CircularProgress size={28} /> : <DesktopWindowsRoundedIcon color="primary" sx={{ fontSize: 44 }} />}
                 <Typography variant="subtitle1">
-                  {resolvedViewerUrl || viewerPending ? "Starting browser viewer" : "Current VNC viewer"}
+                  {mixedContentBlocked
+                    ? "Embedded viewer blocked"
+                    : resolvedViewerUrl || viewerPending
+                      ? "Starting browser viewer"
+                      : "Current VNC viewer"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" textAlign="center" maxWidth={320}>
-                  {resolvedViewerUrl || viewerPending
+                  {mixedContentBlocked
+                    ? "The app is loaded over HTTPS but the VNC session URL is HTTP, so the browser will not embed it."
+                    : resolvedViewerUrl || viewerPending
                     ? viewerState === "error"
                       ? "The viewer is taking longer than expected to respond."
                       : "Waiting for the VNC session to become available."
                     : "Render the active remote viewer here."}
                 </Typography>
+                {mixedContentBlocked && resolvedViewerUrl ? (
+                  <Button
+                    component="a"
+                    href={resolvedViewerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    variant="outlined"
+                    endIcon={<OpenInNewRoundedIcon />}
+                  >
+                    Open Viewer In New Tab
+                  </Button>
+                ) : null}
               </Stack>
             )}
           </Paper>

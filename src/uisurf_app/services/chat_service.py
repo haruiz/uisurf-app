@@ -59,16 +59,18 @@ class ChatService:
         auth_token: str | None = None,
     ) -> ChatSessionResponse:
         now = datetime.now(UTC)
-        session_id = f"chat_{uuid4().hex[:8]}"
-        session = await self._session_service.create_session(
-            app_name=self._app_name,
-            user_id=owner_id,
-            session_id=session_id,
-            state={
+        create_kwargs = {
+            "app_name": self._app_name,
+            "user_id": owner_id,
+            "state": {
                 "title": payload.title,
                 "created_at": now.isoformat(),
             },
-        )
+        }
+        if not get_settings().use_vertex_ai_session_service:
+            create_kwargs["session_id"] = f"chat_{uuid4().hex[:8]}"
+
+        session = await self._session_service.create_session(**create_kwargs)
         self._messages.setdefault(session.id, [])
         if self._ui_agent_session_service.enabled and auth_token:
             await self._chat_vnc_session_service.set_pending(owner_id, session.id)
