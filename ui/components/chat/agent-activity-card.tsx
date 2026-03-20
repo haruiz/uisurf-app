@@ -3,8 +3,10 @@
 import { useState } from "react";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import CodeRoundedIcon from "@mui/icons-material/CodeRounded";
+import DesktopWindowsRoundedIcon from "@mui/icons-material/DesktopWindowsRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
+import LanguageRoundedIcon from "@mui/icons-material/LanguageRounded";
 import SmartToyRoundedIcon from "@mui/icons-material/SmartToyRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import TimelineRoundedIcon from "@mui/icons-material/TimelineRounded";
@@ -88,23 +90,48 @@ function getKindLabel(kind: AgentActivityKind) {
   }
 }
 
+function getAgentChipIcon(agentName: string | null) {
+  const normalized = agentName?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.includes("browser")) {
+    return <LanguageRoundedIcon fontSize="small" />;
+  }
+
+  if (normalized.includes("desktop")) {
+    return <DesktopWindowsRoundedIcon fontSize="small" />;
+  }
+
+  return <SmartToyRoundedIcon fontSize="small" />;
+}
+
 export function AgentActivityCard({ activity }: { activity: AgentActivityModel }) {
   const [open, setOpen] = useState(activity.status === "failed");
   const status = getStatusPresentation(activity.status);
+  const showStatusChip = activity.kind !== "thought";
+  const agentChipIcon = getAgentChipIcon(activity.agentName);
 
   return (
     <Box
       sx={(theme) => ({
+        width: "100%",
+        minWidth: 0,
         borderRadius: 1.5,
         border: "1px solid",
         borderColor:
-          activity.status === "failed"
+          activity.kind === "thought"
+            ? alpha(theme.palette.divider, 0.8)
+            : activity.status === "failed"
             ? alpha(theme.palette.error.main, 0.35)
             : activity.status === "completed"
               ? alpha(theme.palette.success.main, 0.28)
               : alpha(theme.palette.warning.main, 0.3),
         bgcolor:
-          activity.status === "failed"
+          activity.kind === "thought"
+            ? alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.035 : 0.03)
+            : activity.status === "failed"
             ? alpha(theme.palette.error.main, 0.07)
             : activity.status === "completed"
               ? alpha(theme.palette.success.main, 0.06)
@@ -114,17 +141,20 @@ export function AgentActivityCard({ activity }: { activity: AgentActivityModel }
     >
       <Stack spacing={1.25}>
         <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
             <Chip icon={getKindIcon(activity.kind)} label={getKindLabel(activity.kind)} size="small" />
-            <Chip
-              icon={status.icon}
-              label={status.label}
-              size="small"
-              color={status.color}
-              variant="outlined"
-            />
+            {showStatusChip ? (
+              <Chip
+                icon={status.icon}
+                label={status.label}
+                size="small"
+                color={status.color}
+                variant="outlined"
+              />
+            ) : null}
             {activity.agentName ? (
               <Chip
+                icon={agentChipIcon ?? undefined}
                 label={activity.agentName}
                 size="small"
                 variant="outlined"
@@ -148,29 +178,49 @@ export function AgentActivityCard({ activity }: { activity: AgentActivityModel }
           </IconButton>
         </Stack>
 
-        <Stack spacing={0.35}>
+        <Stack spacing={0.35} sx={{ minWidth: 0 }}>
           <Typography variant="body2" sx={{ fontWeight: 700 }}>
             {activity.title}
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              wordBreak: "break-word",
+            }}
+          >
             {activity.summary}
           </Typography>
         </Stack>
 
         {activity.functionName || activity.taskId || activity.contextId ? (
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
             {activity.functionName ? (
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+              >
                 Function: {activity.functionName}
               </Typography>
             ) : null}
             {activity.taskId ? (
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+              >
                 Task: {activity.taskId}
               </Typography>
             ) : null}
             {activity.contextId ? (
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+              >
                 Context: {activity.contextId}
               </Typography>
             ) : null}
@@ -185,6 +235,9 @@ export function AgentActivityCard({ activity }: { activity: AgentActivityModel }
               p: 1.5,
               borderRadius: 1.25,
               overflowX: "auto",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              wordBreak: "break-word",
               bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.08 : 0.06),
               fontSize: 12,
               lineHeight: 1.45,
