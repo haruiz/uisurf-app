@@ -2,7 +2,11 @@
 
 import { create } from "zustand";
 
-import type { LiveChatMessage } from "@/types/live-session";
+import {
+  getAgentActivityModel,
+  type AgentActivityStatus,
+  type LiveChatMessage,
+} from "@/types/live-session";
 
 type MessageStore = {
   currentChatId: string | null;
@@ -24,6 +28,7 @@ type MessageStore = {
   clearMessages: () => void;
   appendLastMessage: (textChunk: string) => void;
   stopStreaming: () => void;
+  settlePendingFunctionCalls: (status: AgentActivityStatus, functionName?: string | null) => void;
 };
 
 export const useMessageStore = create<MessageStore>((set) => ({
@@ -145,4 +150,35 @@ export const useMessageStore = create<MessageStore>((set) => ({
     }),
 
   stopStreaming: () => set({ isStreaming: false, isWaitingForResponse: false }),
+
+  settlePendingFunctionCalls: (status, functionName) =>
+    set((state) => {
+      let hasChanges = false;
+      const messages = state.messages.map((message) => {
+        const activity = getAgentActivityModel(message);
+        if (!activity || activity.kind !== "function_call") {
+          return message;
+        }
+
+        if (message.status === "completed" || message.status === "failed") {
+          return message;
+        }
+
+        if (functionName && activity.functionName !== functionName) {
+          return message;
+        }
+
+        hasChanges = true;
+        return {
+          ...message,
+          status,
+        };
+      });
+
+      if (!hasChanges) {
+        return {};
+      }
+
+      return { messages };
+    }),
 }));

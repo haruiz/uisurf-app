@@ -170,7 +170,7 @@ def trim_diff(diff: str, max_chars: int) -> str:
 
 def get_api_key(provider: str) -> str:
     env_map = {
-        "gemini": "GEMINI_API_KEY",
+        "gemini": "GOOGLE_API_KEY",
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
     }

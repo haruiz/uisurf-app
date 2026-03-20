@@ -19,9 +19,12 @@ class MessageCreate(BaseModel):
     attachments: list[MessageAttachment] = Field(default_factory=list)
 
 
-class MessageResponse(MessageCreate):
+class MessageResponse(BaseModel):
     id: str
     chat_id: str
+    content: str = Field(min_length=1)
+    role: MessageRole = "user"
+    attachments: list[MessageAttachment] = Field(default_factory=list)
     created_at: datetime
 
 

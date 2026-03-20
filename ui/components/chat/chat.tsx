@@ -11,6 +11,8 @@ import { useMessageStore } from "@/store/message-store";
 import {
   createLiveChatMessage,
   createLiveMessageId,
+  getAgentActivityModel,
+  isStructuredActivityPayload,
   isLiveSessionEnvelope,
   normalizeHistoryMessage,
   type LiveSessionEnvelope,
@@ -36,6 +38,7 @@ export function Chat({ token }: { token?: string }) {
   const stopStreaming = useMessageStore((state) => state.stopStreaming);
   const startWaiting = useMessageStore((state) => state.startWaiting);
   const stopWaiting = useMessageStore((state) => state.stopWaiting);
+  const settlePendingFunctionCalls = useMessageStore((state) => state.settlePendingFunctionCalls);
   const isStreaming = useMessageStore((state) => state.isStreaming);
   const lastHandledMessageRef = useRef<unknown>(null);
 
@@ -143,6 +146,28 @@ export function Chat({ token }: { token?: string }) {
         return;
       }
 
+      if (isStructuredActivityPayload(content)) {
+        stopStreaming();
+        stopWaiting();
+        const activityMessage = createLiveChatMessage(
+          selectedChatId,
+          {
+            ...payload,
+            data: {
+              content,
+              mime_type: "application/json",
+            },
+          },
+          createLiveMessageId("model_activity"),
+        );
+        addMessage(activityMessage);
+        const activity = getAgentActivityModel(activityMessage);
+        if (activity?.kind === "function_response") {
+          settlePendingFunctionCalls(activity.status, activity.functionName);
+        }
+        return;
+      }
+
       if (!isStreaming) {
         startStreaming(
           createLiveChatMessage(
@@ -175,6 +200,19 @@ export function Chat({ token }: { token?: string }) {
     }
 
     if (payload.type === "debug") {
+      if (isStructuredActivityPayload(payload.data)) {
+        stopStreaming();
+        const activityMessage = createLiveChatMessage(
+          selectedChatId,
+          payload,
+          createLiveMessageId("debug_activity"),
+        );
+        addMessage(activityMessage);
+        const activity = getAgentActivityModel(activityMessage);
+        if (activity?.kind === "function_response") {
+          settlePendingFunctionCalls(activity.status, activity.functionName);
+        }
+      }
       return;
     }
 
@@ -187,6 +225,7 @@ export function Chat({ token }: { token?: string }) {
             : "An unexpected error occurred";
       setSendError(text);
       addMessage(createLiveChatMessage(selectedChatId, payload));
+      settlePendingFunctionCalls("failed");
       stopStreaming();
       stopWaiting();
       return;
@@ -194,6 +233,10 @@ export function Chat({ token }: { token?: string }) {
 
     const liveMessage = createLiveChatMessage(selectedChatId, payload);
     addMessage(liveMessage);
+    const activity = getAgentActivityModel(liveMessage);
+    if (activity?.kind === "function_response") {
+      settlePendingFunctionCalls(activity.status, activity.functionName);
+    }
 
     if (payload.type !== "info") {
       setSendError(null);
@@ -213,6 +256,7 @@ export function Chat({ token }: { token?: string }) {
     startWaiting,
     stopStreaming,
     stopWaiting,
+    settlePendingFunctionCalls,
   ]);
 
   return (

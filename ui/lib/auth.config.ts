@@ -4,7 +4,6 @@ export const authConfig = {
   pages: {
     signIn: "/login",
   },
-  trustHost: true,
   callbacks: {
     authorized: async ({ auth: session, request }) => {
       const isLoggedIn = Boolean(session?.user);
@@ -31,8 +30,8 @@ export const authConfig = {
         session.user.email = token.email ?? session.user.email;
         session.user.name = token.name ?? session.user.name;
       }
-      session.accessToken =
-        typeof token.firebaseIdToken === "string" ? token.firebaseIdToken : undefined;
+      // @ts-ignore
+        session.accessToken = token.firebaseIdToken;
       return session;
     },
   },

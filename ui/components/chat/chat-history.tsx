@@ -3,8 +3,8 @@
 import { Box, CircularProgress, Paper, Skeleton, Stack, Typography } from "@mui/material";
 
 import { useMessageStore } from "@/store/message-store";
-import type { FunctionResponseData, LiveChatMessage } from "@/types/live-session";
-import { getLiveMessageText } from "@/types/live-session";
+import type { AgentActivityStatus, LiveChatMessage } from "@/types/live-session";
+import { getAgentActivityModel, getLiveMessageText } from "@/types/live-session";
 
 import { ChatMessage } from "./chat-message";
 
@@ -14,25 +14,18 @@ type ChatHistoryProps = {
   canResend?: boolean;
 };
 
-function hasNamedFunctionResponse(
-  message: LiveChatMessage,
-): message is LiveChatMessage & { data: FunctionResponseData } {
-  return (
-    message.type === "function_response" &&
-    !!message.data &&
-    typeof message.data === "object" &&
-    "name" in message.data &&
-    typeof message.data.name === "string"
-  );
-}
-
 export function ChatHistory({ chatId, onResendMessage, canResend = false }: ChatHistoryProps) {
   const messages = useMessageStore((state) => state.messages);
   const isLoadingHistory = useMessageStore((state) => state.isLoadingHistory);
   const isWaitingForResponse = useMessageStore((state) => state.isWaitingForResponse);
-  const completedFunctionNames = new Set(
-    messages.filter(hasNamedFunctionResponse).map((message) => message.data.name),
-  );
+  const functionStatusByName = new Map<string, AgentActivityStatus>();
+  for (const message of messages) {
+    const activity = getAgentActivityModel(message);
+    if (!activity?.functionName || activity.kind !== "function_response") {
+      continue;
+    }
+    functionStatusByName.set(activity.functionName, activity.status);
+  }
   const latestUserTextMessageId =
     [...messages]
       .reverse()
@@ -147,32 +140,32 @@ export function ChatHistory({ chatId, onResendMessage, canResend = false }: Chat
       }}
     >
       <Stack spacing={2} sx={{ minHeight: "100%" }}>
-        {messages.map((message) => (
-          <ChatMessage
-            key={message.id}
-            message={message}
-            canResend={canResend && message.id === latestUserTextMessageId}
-            functionCallStatus={
-              message.type === "function_call" &&
-              message.data &&
-              typeof message.data === "object" &&
-              "name" in message.data &&
-              completedFunctionNames.has(String(message.data.name))
-                ? "completed"
-                : "running"
-            }
-            onResend={
-              onResendMessage
-                ? () => {
-                    const text = getLiveMessageText(message);
-                    if (text) {
-                      onResendMessage(text);
+        {messages.map((message) => {
+          const activity = getAgentActivityModel(message);
+          const resolvedFunctionCallStatus =
+            activity?.kind === "function_call" && activity.functionName
+              ? functionStatusByName.get(activity.functionName) ?? message.status ?? "running"
+              : message.status ?? "running";
+
+          return (
+            <ChatMessage
+              key={message.id}
+              message={message}
+              canResend={canResend && message.id === latestUserTextMessageId}
+              functionCallStatus={resolvedFunctionCallStatus}
+              onResend={
+                onResendMessage
+                  ? () => {
+                      const text = getLiveMessageText(message);
+                      if (text) {
+                        onResendMessage(text);
+                      }
                     }
-                  }
-                : undefined
-            }
-          />
-        ))}
+                  : undefined
+              }
+            />
+          );
+        })}
         {isWaitingForResponse ? (
           <Paper
             elevation={0}

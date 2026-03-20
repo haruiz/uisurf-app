@@ -1,32 +1,29 @@
 "use client";
 
-import { useState } from "react";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
-import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
-import CodeRoundedIcon from "@mui/icons-material/CodeRounded";
 import GraphicEqRoundedIcon from "@mui/icons-material/GraphicEqRounded";
 import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
 import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded";
 import SmartToyRoundedIcon from "@mui/icons-material/SmartToyRounded";
 import SupportAgentRoundedIcon from "@mui/icons-material/SupportAgentRounded";
-import Collapse from "@mui/material/Collapse";
 import { Avatar, Box, Chip, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
 import { alpha, type Theme } from "@mui/material/styles";
 
 import type {
+  AgentActivityStatus,
   AudioData,
-  FunctionCallData,
-  FunctionProgressData,
-  FunctionResponseData,
   LiveChatMessage,
 } from "@/types/live-session";
-import { getLiveMessageText } from "@/types/live-session";
+import { getAgentActivityModel, getLiveMessageText } from "@/types/live-session";
+
+import { AgentActivityCard } from "./agent-activity-card";
+import { MarkdownMessage } from "./markdown-message";
 
 type ChatMessageProps = {
   message: LiveChatMessage;
   canResend?: boolean;
   onResend?: () => void;
-  functionCallStatus?: "running" | "completed";
+  functionCallStatus?: AgentActivityStatus;
 };
 
 function getMessagePresentation(sender: LiveChatMessage["sender"]) {
@@ -64,113 +61,25 @@ function formatJson(value: unknown) {
   }
 }
 
-function ExpandableJson({
-  label,
-  value,
-}: {
-  label: string;
-  value: unknown;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Stack spacing={1}>
-      <Tooltip title={open ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}>
-        <Chip
-          clickable
-          icon={<ExpandMoreRoundedIcon sx={{ transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }} />}
-          label={label}
-          onClick={() => setOpen((current) => !current)}
-          variant="outlined"
-          sx={{ alignSelf: "flex-start" }}
-        />
-      </Tooltip>
-      <Collapse in={open} unmountOnExit>
-        <Box
-          component="pre"
-          sx={{
-            m: 0,
-            p: 1.5,
-            borderRadius: 1,
-            overflowX: "auto",
-            bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.05 : 0.06),
-            fontSize: 12,
-          }}
-        >
-          {formatJson(value)}
-        </Box>
-      </Collapse>
-    </Stack>
-  );
-}
-
 function renderMessageBody(
   message: LiveChatMessage,
-  functionCallStatus: "running" | "completed",
+  functionCallStatus: AgentActivityStatus,
 ) {
+  const activity = getAgentActivityModel(message, functionCallStatus);
+  if (activity) {
+    return <AgentActivityCard activity={activity} />;
+  }
+
   const text = getLiveMessageText(message);
   if (text) {
+    if (message.sender === "model" && message.type === "text") {
+      return <MarkdownMessage content={text} />;
+    }
+
     return (
       <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
         {text}
       </Typography>
-    );
-  }
-
-  if (message.type === "function_call" && message.data && typeof message.data === "object") {
-    const data = message.data as FunctionCallData;
-    return (
-      <Stack spacing={1}>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Chip
-            icon={<CodeRoundedIcon />}
-            label={`Function call: ${data.name}`}
-            size="small"
-            sx={{ alignSelf: "flex-start" }}
-          />
-          <Chip
-            label={functionCallStatus === "completed" ? "Completed" : "Running"}
-            size="small"
-            color={functionCallStatus === "completed" ? "success" : "warning"}
-            variant="outlined"
-          />
-        </Stack>
-        <ExpandableJson label="Arguments" value={data.arguments} />
-      </Stack>
-    );
-  }
-
-  if (message.type === "function_response" && message.data && typeof message.data === "object") {
-    const data = message.data as FunctionResponseData;
-    return (
-      <Stack spacing={1}>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Chip
-            icon={<CodeRoundedIcon />}
-            label={data.name}
-            size="small"
-            sx={{ alignSelf: "flex-start" }}
-          />
-        </Stack>
-        <ExpandableJson label="Response" value={data.response ?? ""} />
-      </Stack>
-    );
-  }
-
-  if (message.type === "function_progress" && message.data && typeof message.data === "object") {
-    const data = message.data as FunctionProgressData;
-    return (
-      <Stack spacing={0.5}>
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {data.name}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          {data.message}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {`${data.percentage}% (${data.progress}/${data.total})`}
-        </Typography>
-      </Stack>
     );
   }
 
@@ -209,12 +118,15 @@ export function ChatMessage({
 }: ChatMessageProps) {
   const presentation = getMessagePresentation(message.sender);
   const messageText = getLiveMessageText(message);
+  const activity = getAgentActivityModel(message, functionCallStatus);
+  const copyValue =
+    messageText ?? (activity && message.sender === "model" ? formatJson(activity.raw) : null);
 
   async function handleCopy() {
-    if (!messageText) {
+    if (!copyValue) {
       return;
     }
-    await navigator.clipboard.writeText(messageText);
+    await navigator.clipboard.writeText(copyValue);
   }
 
   return (
@@ -265,7 +177,7 @@ export function ChatMessage({
               </Tooltip>
             </Stack>
           ) : null}
-          {message.sender === "model" && messageText ? (
+          {message.sender === "model" && copyValue ? (
             <Stack direction="row" justifyContent="flex-end">
               <Tooltip title="Copy message">
                 <IconButton
