@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import CircularProgress from "@mui/material/CircularProgress";
 import DesktopWindowsRoundedIcon from "@mui/icons-material/DesktopWindowsRounded";
 import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
-import { Box, Button, Divider, Paper, Stack, Typography } from "@mui/material";
+import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
+import { Box, Button, Divider, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 
 const IFRAME_LOAD_TIMEOUT_MS = 15000;
@@ -14,13 +15,16 @@ export function VncPanel({
   viewerUrl,
   viewerPending = false,
   onStatusChange,
+  onRefreshRequest,
 }: {
   chatId?: string | null;
   viewerUrl?: string | null;
   viewerPending?: boolean;
   onStatusChange?: (status: "idle" | "probing" | "ready" | "error") => void;
+  onRefreshRequest?: () => void;
 }) {
   const [viewerState, setViewerState] = useState<"idle" | "probing" | "ready" | "error">("idle");
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const loadTimeoutRef = useRef<number | null>(null);
 
   const resolvedViewerUrl = useMemo(() => {
@@ -43,12 +47,13 @@ export function VncPanel({
           : "websockify";
         url.searchParams.set("path", derivedPath);
       }
+      url.searchParams.set("_refresh", String(refreshNonce));
       return url.toString();
     } catch {
       const separator = viewerUrl.includes("?") ? "&" : "?";
-      return `${viewerUrl}${separator}autoconnect=1&resize=scale`;
+      return `${viewerUrl}${separator}autoconnect=1&resize=scale&_refresh=${refreshNonce}`;
     }
-  }, [viewerUrl]);
+  }, [refreshNonce, viewerUrl]);
 
   const mixedContentBlocked = useMemo(() => {
     if (!resolvedViewerUrl || typeof window === "undefined") {
@@ -100,6 +105,17 @@ export function VncPanel({
     onStatusChange?.(viewerState);
   }, [chatId, onStatusChange, viewerState]);
 
+  function handleRefreshViewer() {
+    if (loadTimeoutRef.current !== null) {
+      window.clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
+
+    setViewerState(viewerUrl || viewerPending ? "probing" : "idle");
+    setRefreshNonce((current) => current + 1);
+    onRefreshRequest?.();
+  }
+
   return (
     <Paper
       elevation={0}
@@ -115,14 +131,33 @@ export function VncPanel({
       }}
     >
       <Stack spacing={2.5} sx={{ height: "100%" }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.18em" }}>
-            Remote
-          </Typography>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-            Browser Viewer
-          </Typography>
-        </Box>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.18em" }}>
+              Remote
+            </Typography>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+              Browser Viewer
+            </Typography>
+          </Box>
+          <Tooltip title="Refresh viewer">
+            <span>
+              <IconButton
+                color="inherit"
+                aria-label="Refresh viewer"
+                onClick={handleRefreshViewer}
+                disabled={!chatId}
+                sx={{
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.02 : 0.04),
+                }}
+              >
+                <RefreshRoundedIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
 
         <Divider />
 
@@ -143,6 +178,7 @@ export function VncPanel({
               <>
                 <Box
                   component="iframe"
+                  key={`${chatId ?? "viewer"}:${refreshNonce}:${resolvedViewerUrl ?? "empty"}`}
                   src={resolvedViewerUrl}
                   title="Browser Viewer"
                   onLoad={() => {

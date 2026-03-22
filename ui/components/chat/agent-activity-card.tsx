@@ -6,6 +6,7 @@ import CodeRoundedIcon from "@mui/icons-material/CodeRounded";
 import DesktopWindowsRoundedIcon from "@mui/icons-material/DesktopWindowsRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
+import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
 import LanguageRoundedIcon from "@mui/icons-material/LanguageRounded";
 import SmartToyRoundedIcon from "@mui/icons-material/SmartToyRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
@@ -60,6 +61,8 @@ function getStatusPresentation(status: AgentActivityModel["status"]) {
 
 function getKindIcon(kind: AgentActivityKind) {
   switch (kind) {
+    case "approval_required":
+      return <FactCheckRoundedIcon fontSize="small" />;
     case "function_call":
     case "function_response":
       return <CodeRoundedIcon fontSize="small" />;
@@ -73,6 +76,8 @@ function getKindIcon(kind: AgentActivityKind) {
 
 function getKindLabel(kind: AgentActivityKind) {
   switch (kind) {
+    case "approval_required":
+      return "Approval required";
     case "function_call":
       return "Function call";
     case "function_response":
@@ -107,10 +112,19 @@ function getAgentChipIcon(agentName: string | null) {
   return <SmartToyRoundedIcon fontSize="small" />;
 }
 
-export function AgentActivityCard({ activity }: { activity: AgentActivityModel }) {
+type AgentActivityCardProps = {
+  activity: AgentActivityModel;
+};
+
+export function AgentActivityCard({ activity }: AgentActivityCardProps) {
   const [open, setOpen] = useState(activity.status === "failed");
   const status = getStatusPresentation(activity.status);
-  const showStatusChip = activity.kind !== "thought";
+  const showStatusChip =
+    activity.kind !== "thought" &&
+    !(
+      (activity.kind === "function_call" || activity.kind === "approval_required") &&
+      activity.status === "running"
+    );
   const agentChipIcon = getAgentChipIcon(activity.agentName);
 
   return (
@@ -149,6 +163,15 @@ export function AgentActivityCard({ activity }: { activity: AgentActivityModel }
                 label={status.label}
                 size="small"
                 color={status.color}
+                variant="outlined"
+              />
+            ) : null}
+            {activity.safetyAcknowledged ? (
+              <Chip
+                icon={<FactCheckRoundedIcon fontSize="small" />}
+                label="Human approved"
+                size="small"
+                color="warning"
                 variant="outlined"
               />
             ) : null}

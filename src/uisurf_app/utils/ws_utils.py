@@ -27,7 +27,6 @@ async def send_message(ws: WebSocket, message: Message):
     await ws.send_json(message.model_dump(exclude_none=True, mode="json"))
 
 
-
 @contextmanager
 def suppress_exception():
     try:

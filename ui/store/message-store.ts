@@ -4,12 +4,22 @@ import { create } from "zustand";
 
 import {
   getAgentActivityModel,
+  getLiveMessageText,
   type AgentActivityStatus,
   type LiveChatMessage,
 } from "@/types/live-session";
 
+type ChatViewState = {
+  messages: LiveChatMessage[];
+  isLoadingHistory: boolean;
+  isStreaming: boolean;
+  isWaitingForResponse: boolean;
+  sendError: string | null;
+};
+
 type MessageStore = {
   currentChatId: string | null;
+  chatStateById: Record<string, ChatViewState | undefined>;
   messages: LiveChatMessage[];
   isLoadingHistory: boolean;
   isStreaming: boolean;
@@ -17,27 +27,133 @@ type MessageStore = {
   sendError: string | null;
   setCurrentChat: (chatId: string | null) => void;
   setMessages: (chatId: string, messages: LiveChatMessage[]) => void;
-  startLoadingHistory: () => void;
-  stopLoadingHistory: () => void;
+  startLoadingHistory: (chatId?: string | null) => void;
+  stopLoadingHistory: (chatId?: string | null) => void;
   addMessage: (message: LiveChatMessage) => void;
   upsertMessage: (message: LiveChatMessage) => void;
-  startWaiting: () => void;
-  stopWaiting: () => void;
-  setSendError: (error: string | null) => void;
+  startWaiting: (chatId?: string | null) => void;
+  stopWaiting: (chatId?: string | null) => void;
+  setSendError: (error: string | null, chatId?: string | null) => void;
   startStreaming: (initialMessage: LiveChatMessage) => void;
   clearMessages: () => void;
-  appendLastMessage: (textChunk: string) => void;
-  stopStreaming: () => void;
-  settlePendingFunctionCalls: (status: AgentActivityStatus, functionName?: string | null) => void;
+  appendLastMessage: (textChunk: string, chatId?: string | null) => void;
+  stopStreaming: (chatId?: string | null) => void;
+  settlePendingFunctionCalls: (
+    status: AgentActivityStatus,
+    functionName?: string | null,
+    chatId?: string | null,
+  ) => void;
 };
+
+function createEmptyChatViewState(): ChatViewState {
+  return {
+    messages: [],
+    isLoadingHistory: false,
+    isStreaming: false,
+    isWaitingForResponse: false,
+    sendError: null,
+  };
+}
+
+function getChatViewState(
+  chatStateById: Record<string, ChatViewState | undefined>,
+  chatId: string | null,
+): ChatViewState {
+  if (!chatId) {
+    return createEmptyChatViewState();
+  }
+
+  return chatStateById[chatId] ?? createEmptyChatViewState();
+}
+
+function syncVisibleChatState(
+  currentChatId: string | null,
+  targetChatId: string,
+  nextChatState: ChatViewState,
+) {
+  if (currentChatId !== targetChatId) {
+    return {};
+  }
+
+  return nextChatState;
+}
+
+function resolveTargetChatId(explicitChatId: string | null | undefined, currentChatId: string | null) {
+  return explicitChatId ?? currentChatId;
+}
+
+function normalizeMessageSignatureText(message: LiveChatMessage) {
+  const text = getLiveMessageText(message)?.trim();
+  if (!text) {
+    return null;
+  }
+
+  return text.replace(/\s+/g, " ");
+}
+
+function getLooseMessageSignature(message: LiveChatMessage) {
+  if (message.type !== "text") {
+    return null;
+  }
+
+  const normalizedText = normalizeMessageSignatureText(message);
+  if (normalizedText) {
+    return `${message.sender}:${message.type}:${normalizedText}`;
+  }
+
+  try {
+    return `${message.sender}:${message.type}:${JSON.stringify(message.data)}`;
+  } catch {
+    return `${message.sender}:${message.type}:${String(message.data)}`;
+  }
+}
+
+function mergeChatMessages(historyMessages: LiveChatMessage[], currentMessages: LiveChatMessage[]) {
+  if (currentMessages.length === 0) {
+    return historyMessages;
+  }
+
+  const mergedMessages = [...historyMessages];
+  const seenIds = new Set(historyMessages.map((message) => message.id));
+  const seenLooseSignatures = new Set(
+    historyMessages
+      .map((message) => getLooseMessageSignature(message))
+      .filter((signature): signature is string => Boolean(signature)),
+  );
+
+  for (const message of currentMessages) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+
+    const looseSignature = getLooseMessageSignature(message);
+    if (looseSignature && seenLooseSignatures.has(looseSignature)) {
+      continue;
+    }
+
+    seenIds.add(message.id);
+    if (looseSignature) {
+      seenLooseSignatures.add(looseSignature);
+    }
+    mergedMessages.push(message);
+  }
+
+  return mergedMessages.sort((left, right) => {
+    const leftTimestamp = Date.parse(left.createdAt);
+    const rightTimestamp = Date.parse(right.createdAt);
+
+    if (!Number.isNaN(leftTimestamp) && !Number.isNaN(rightTimestamp) && leftTimestamp !== rightTimestamp) {
+      return leftTimestamp - rightTimestamp;
+    }
+
+    return left.createdAt.localeCompare(right.createdAt);
+  });
+}
 
 export const useMessageStore = create<MessageStore>((set) => ({
   currentChatId: null,
-  messages: [],
-  isLoadingHistory: false,
-  isStreaming: false,
-  isWaitingForResponse: false,
-  sendError: null,
+  chatStateById: {},
+  ...createEmptyChatViewState(),
 
   setCurrentChat: (chatId) =>
     set((state) => {
@@ -47,75 +163,238 @@ export const useMessageStore = create<MessageStore>((set) => ({
 
       return {
         currentChatId: chatId,
-        messages: [],
-        isLoadingHistory: false,
-        isStreaming: false,
-        isWaitingForResponse: false,
-        sendError: null,
+        ...getChatViewState(state.chatStateById, chatId),
       };
     }),
 
   setMessages: (chatId, messages) =>
     set((state) => {
-      if (state.currentChatId !== chatId) {
-        return {};
-      }
+      const currentChatState = getChatViewState(state.chatStateById, chatId);
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages: mergeChatMessages(messages, currentChatState.messages),
+        isLoadingHistory: false,
+      };
 
       return {
-        messages,
-        isLoadingHistory: false,
-        isStreaming: false,
-        isWaitingForResponse: false,
+        chatStateById: {
+          ...state.chatStateById,
+          [chatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, chatId, nextChatState),
       };
     }),
 
-  startLoadingHistory: () => set({ isLoadingHistory: true, sendError: null }),
-  stopLoadingHistory: () => set({ isLoadingHistory: false }),
+  startLoadingHistory: (chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return {
+          isLoadingHistory: true,
+          sendError: null,
+        };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        isLoadingHistory: true,
+        sendError: null,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
+  stopLoadingHistory: (chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return { isLoadingHistory: false };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        isLoadingHistory: false,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
 
   addMessage: (message) =>
-    set((state) => ({
-      messages: [...state.messages, message],
-    })),
+    set((state) => {
+      const currentChatState = getChatViewState(state.chatStateById, message.chatId);
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages: [...currentChatState.messages, message],
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [message.chatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, message.chatId, nextChatState),
+      };
+    }),
 
   upsertMessage: (message) =>
     set((state) => {
-      const existingIndex = state.messages.findIndex((item) => item.id === message.id);
+      const currentChatState = getChatViewState(state.chatStateById, message.chatId);
+      const existingIndex = currentChatState.messages.findIndex((item) => item.id === message.id);
       if (existingIndex === -1) {
-        return { messages: [...state.messages, message] };
+        const nextChatState: ChatViewState = {
+          ...currentChatState,
+          messages: [...currentChatState.messages, message],
+        };
+        return {
+          chatStateById: {
+            ...state.chatStateById,
+            [message.chatId]: nextChatState,
+          },
+          ...syncVisibleChatState(state.currentChatId, message.chatId, nextChatState),
+        };
       }
 
-      const messages = [...state.messages];
+      const messages = [...currentChatState.messages];
       messages[existingIndex] = message;
-      return { messages };
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages,
+      };
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [message.chatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, message.chatId, nextChatState),
+      };
     }),
 
-  startWaiting: () => set({ isWaitingForResponse: true, sendError: null }),
-  stopWaiting: () => set({ isWaitingForResponse: false }),
-  setSendError: (sendError) => set({ sendError }),
+  startWaiting: (chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return {
+          isWaitingForResponse: true,
+          sendError: null,
+        };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        isWaitingForResponse: true,
+        sendError: null,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
+  stopWaiting: (chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return { isWaitingForResponse: false };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        isWaitingForResponse: false,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
+  setSendError: (sendError, chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return { sendError };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        sendError,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
 
   startStreaming: (initialMessage) =>
-    set((state) => ({
-      messages: [...state.messages, initialMessage],
-      isStreaming: true,
-      isWaitingForResponse: false,
-    })),
+    set((state) => {
+      const currentChatState = getChatViewState(state.chatStateById, initialMessage.chatId);
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages: [...currentChatState.messages, initialMessage],
+        isStreaming: true,
+        isWaitingForResponse: false,
+      };
 
-  clearMessages: () =>
-    set({
-      messages: [],
-      isLoadingHistory: false,
-      isStreaming: false,
-      isWaitingForResponse: false,
-      sendError: null,
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [initialMessage.chatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, initialMessage.chatId, nextChatState),
+      };
     }),
 
-  appendLastMessage: (textChunk) =>
+  clearMessages: () =>
     set((state) => {
-      if (!state.isStreaming) {
+      if (!state.currentChatId) {
+        return {
+          ...createEmptyChatViewState(),
+        };
+      }
+
+      const nextChatState = createEmptyChatViewState();
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [state.currentChatId]: nextChatState,
+        },
+        ...nextChatState,
+      };
+    }),
+
+  appendLastMessage: (textChunk, chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
         return {};
       }
 
-      const lastMessageIndex = state.messages.findLastIndex(
+      const currentChatState = getChatViewState(state.chatStateById, targetChatId);
+      if (!currentChatState.isStreaming) {
+        return {};
+      }
+
+      const lastMessageIndex = currentChatState.messages.findLastIndex(
         (message) => message.sender === "model" && message.type === "text",
       );
 
@@ -123,7 +402,7 @@ export const useMessageStore = create<MessageStore>((set) => ({
         return {};
       }
 
-      const messages = [...state.messages];
+      const messages = [...currentChatState.messages];
       const lastMessage = messages[lastMessageIndex];
       const currentContent =
         typeof lastMessage.data === "string"
@@ -146,15 +425,65 @@ export const useMessageStore = create<MessageStore>((set) => ({
           mime_type: "text/plain",
         },
       };
-      return { messages };
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages,
+      };
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
     }),
 
-  stopStreaming: () => set({ isStreaming: false, isWaitingForResponse: false }),
-
-  settlePendingFunctionCalls: (status, functionName) =>
+  stopStreaming: (chatId) =>
     set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return {
+          isStreaming: false,
+          isWaitingForResponse: false,
+        };
+      }
+
+      const nextChatState: ChatViewState = {
+        ...getChatViewState(state.chatStateById, targetChatId),
+        isStreaming: false,
+        isWaitingForResponse: false,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
+    }),
+
+  settlePendingFunctionCalls: (status, functionName, chatId) =>
+    set((state) => {
+      const targetChatId = resolveTargetChatId(chatId, state.currentChatId);
+      if (!targetChatId) {
+        return {};
+      }
+
+      const currentChatState = getChatViewState(state.chatStateById, targetChatId);
+      const targetMessageId = functionName
+        ? currentChatState.messages.find((message) => {
+            const activity = getAgentActivityModel(message);
+            if (!activity || activity.kind !== "function_call" || activity.functionName !== functionName) {
+              return false;
+            }
+
+            return message.status !== "completed" && message.status !== "failed";
+          })?.id ?? null
+        : null;
+
       let hasChanges = false;
-      const messages = state.messages.map((message) => {
+      const messages = currentChatState.messages.map((message) => {
         const activity = getAgentActivityModel(message);
         if (!activity || activity.kind !== "function_call") {
           return message;
@@ -164,7 +493,11 @@ export const useMessageStore = create<MessageStore>((set) => ({
           return message;
         }
 
-        if (functionName && activity.functionName !== functionName) {
+        if (functionName) {
+          if (message.id !== targetMessageId) {
+            return message;
+          }
+        } else if (activity.functionName && status !== "failed") {
           return message;
         }
 
@@ -179,6 +512,17 @@ export const useMessageStore = create<MessageStore>((set) => ({
         return {};
       }
 
-      return { messages };
+      const nextChatState: ChatViewState = {
+        ...currentChatState,
+        messages,
+      };
+
+      return {
+        chatStateById: {
+          ...state.chatStateById,
+          [targetChatId]: nextChatState,
+        },
+        ...syncVisibleChatState(state.currentChatId, targetChatId, nextChatState),
+      };
     }),
 }));

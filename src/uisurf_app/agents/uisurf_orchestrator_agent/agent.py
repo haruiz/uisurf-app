@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import AsyncGenerator
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin
 
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.types import TransportProtocol as A2ATransport
+from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.agents.remote_a2a_agent import (
     AGENT_CARD_WELL_KNOWN_PATH,
     RemoteA2aAgent,
@@ -50,33 +51,8 @@ def _resolve_live_agent_model() -> str:
     return configured_model
 
 
-def _build_a2a_url(vnc_url: str | None, path: str) -> str | None:
-    if not vnc_url:
-        return None
-    parsed = urlparse(vnc_url)
-    if not parsed.scheme or not parsed.netloc:
-        return None
-    base_path = parsed.path or "/"
-    if base_path.endswith("/vnc.html"):
-        base_path = base_path[: -len("/vnc.html")]
-    elif base_path.endswith("vnc.html"):
-        base_path = base_path[: -len("vnc.html")]
-    agent_path = f"{base_path.rstrip('/')}/{path.strip('/')}/"
-    return urlunparse(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            agent_path,
-            "",
-            "",
-            "",
-        )
-    )
-
-
-def _build_remote_ui_agents(vnc_url: str | None) -> list[RemoteA2aAgent]:
-    remote_agents: list[RemoteA2aAgent] = []
-    a2a_client_factory = A2AClientFactory(
+def _build_a2a_client_factory() -> A2AClientFactory:
+    return A2AClientFactory(
         config=A2AClientConfig(
             streaming=True,
             polling=False,
@@ -84,35 +60,80 @@ def _build_remote_ui_agents(vnc_url: str | None) -> list[RemoteA2aAgent]:
         )
     )
 
-    browser_a2a_url = _build_a2a_url(vnc_url, "browser")
-    if browser_a2a_url:
-        remote_agents.append(
-            RemoteA2aAgent(
-                name=WEB_BROWSER_AGENT_NAME,
-                description=(
-                    "Specialized browser automation agent for interacting with websites and web applications. "
-                    "Use this agent for tasks such as opening pages, searching the web, clicking elements, "
-                    "filling forms, navigating multi-step workflows, and extracting information from browser-based interfaces."
-                ),
-                agent_card=f"{browser_a2a_url.rstrip('/')}{AGENT_CARD_WELL_KNOWN_PATH}",
-                a2a_client_factory=a2a_client_factory,
-            )
-        )
 
-    desktop_a2a_url = _build_a2a_url(vnc_url, "desktop")
-    if desktop_a2a_url:
-        remote_agents.append(
-            RemoteA2aAgent(
-                name=DESKTOP_AGENT_NAME,
-                description=(
-                    "Specialized desktop automation agent for interacting with native desktop environments. "
-                    "Use this agent for tasks such as opening desktop applications, clicking UI elements, "
-                    "typing text, navigating system dialogs, and completing multi-step workflows outside the browser."
-                ),
-                agent_card=f"{desktop_a2a_url.rstrip('/')}{AGENT_CARD_WELL_KNOWN_PATH}",
-                a2a_client_factory=a2a_client_factory,
-            )
-        )
+def _normalize_remote_agent_url(agent_url: str | None) -> str | None:
+    if agent_url is None:
+        return None
+    normalized_url = agent_url.strip()
+    return normalized_url or None
+
+
+def _build_remote_agent_card_url(agent_url: str) -> str:
+    return urljoin(f"{agent_url.rstrip('/')}/", AGENT_CARD_WELL_KNOWN_PATH.lstrip("/"))
+
+
+def _build_remote_browser_agent(
+    browser_agent_url: str | None,
+    *,
+    a2a_client_factory: A2AClientFactory,
+) -> RemoteA2aAgent | None:
+    normalized_browser_agent_url = _normalize_remote_agent_url(browser_agent_url)
+    if normalized_browser_agent_url is None:
+        return None
+
+    return RemoteA2aAgent(
+        name=WEB_BROWSER_AGENT_NAME,
+        description=(
+            "Specialized browser automation agent for interacting with websites and web applications. "
+            "Use this agent for tasks such as opening pages, searching the web, clicking elements, "
+            "filling forms, navigating multi-step workflows, and extracting information from browser-based interfaces."
+        ),
+        agent_card=_build_remote_agent_card_url(normalized_browser_agent_url),
+        a2a_client_factory=a2a_client_factory,
+    )
+
+
+def _build_remote_desktop_agent(
+    desktop_agent_url: str | None,
+    *,
+    a2a_client_factory: A2AClientFactory,
+) -> RemoteA2aAgent | None:
+    normalized_desktop_agent_url = _normalize_remote_agent_url(desktop_agent_url)
+    if normalized_desktop_agent_url is None:
+        return None
+
+    return RemoteA2aAgent(
+        name=DESKTOP_AGENT_NAME,
+        description=(
+            "Specialized desktop automation agent for interacting with native desktop environments. "
+            "Use this agent for tasks such as opening desktop applications, clicking UI elements, "
+            "typing text, navigating system dialogs, and completing multi-step workflows outside the browser."
+        ),
+        agent_card=_build_remote_agent_card_url(normalized_desktop_agent_url),
+        a2a_client_factory=a2a_client_factory,
+    )
+
+
+def _build_remote_ui_agents(
+    browser_agent_url: str | None,
+    desktop_agent_url: str | None,
+) -> list[RemoteA2aAgent]:
+    remote_agents: list[RemoteA2aAgent] = []
+    a2a_client_factory = _build_a2a_client_factory()
+
+    browser_agent = _build_remote_browser_agent(
+        browser_agent_url,
+        a2a_client_factory=a2a_client_factory,
+    )
+    if browser_agent is not None:
+        remote_agents.append(browser_agent)
+
+    desktop_agent = _build_remote_desktop_agent(
+        desktop_agent_url,
+        a2a_client_factory=a2a_client_factory,
+    )
+    if desktop_agent is not None:
+        remote_agents.append(desktop_agent)
 
     return remote_agents
 
@@ -535,9 +556,16 @@ class OrchestratedAutomationAgent(BaseAgent):
         return ""
 
 
-def get_uisurf_agent(vnc_url: str | None) -> SequentialAgent:
+def get_uisurf_orchestrator_agent(
+    *,
+    browser_agent_url: str | None = None,
+    desktop_agent_url: str | None = None,
+) -> SequentialAgent:
     model = _resolve_live_agent_model()
-    remote_agents = _build_remote_ui_agents(vnc_url)
+    remote_agents = _build_remote_ui_agents(
+        browser_agent_url=browser_agent_url,
+        desktop_agent_url=desktop_agent_url,
+    )
     tool_availability_summary = _build_tool_availability_summary(remote_agents)
 
     planning_agent = LlmAgent(
@@ -603,4 +631,15 @@ def get_uisurf_agent(vnc_url: str | None) -> SequentialAgent:
             automation_agent,
             summarization_agent,
         ],
+    )
+
+# Check if we're running locally (adk web) or being deployed
+# When deployed to Agent Engine, we use lazy initialization
+_RUNNING_IN_ADK_WEB = os.environ.get("RUNNING_IN_ADK_WEB", "false").lower() == "true"
+DESKTOP_AGENT_URL = os.environ.get("DESKTOP_AGENT_URL","http://127.0.0.1:8002")
+BROWSER_AGENT_URL = os.environ.get("BROWSER_AGENT_URL", "http://127.0.0.1:8001")
+if _RUNNING_IN_ADK_WEB:
+    root_agent = get_uisurf_orchestrator_agent(
+        browser_agent_url=BROWSER_AGENT_URL,
+        desktop_agent_url=DESKTOP_AGENT_URL,
     )

@@ -13,28 +13,34 @@ import { useSession } from "next-auth/react";
 import { useWebSocketContext } from "@/components/providers/websocket-provider";
 import { refinePrompt } from "@/lib/api";
 import { messageInputSchema } from "@/lib/validators";
+import { useChatStore } from "@/store/chat-store";
 import { useMessageStore } from "@/store/message-store";
 import { createLiveChatMessage, createLiveMessageId } from "@/types/live-session";
 
 type ChatInputProps = {
   chatId: string | null;
   token?: string;
+  controlMode?: "agent" | "manual" | null;
 };
 
-export function ChatInput({ chatId, token }: ChatInputProps) {
-  const [content, setContent] = useState("");
+export function ChatInput({ chatId, token, controlMode = null }: ChatInputProps) {
   const [isRefiningPrompt, setIsRefiningPrompt] = useState(false);
   const { data: session } = useSession();
   const { sendJsonMessage, connectionStatus } = useWebSocketContext();
+  const content = useChatStore((state) => (chatId ? state.draftByChatId[chatId] ?? "" : ""));
+  const setChatDraft = useChatStore((state) => state.setChatDraft);
+  const clearChatDraft = useChatStore((state) => state.clearChatDraft);
   const sendError = useMessageStore((state) => state.sendError);
   const setSendError = useMessageStore((state) => state.setSendError);
   const addMessage = useMessageStore((state) => state.addMessage);
   const startWaiting = useMessageStore((state) => state.startWaiting);
   const stopWaiting = useMessageStore((state) => state.stopWaiting);
+  const hasChat = Boolean(chatId);
+  const canSend = hasChat && connectionStatus === "Open";
 
   async function submitMessage() {
     const parsed = messageInputSchema.safeParse({ content });
-    if (!parsed.success || !chatId) {
+    if (!parsed.success || !chatId || connectionStatus !== "Open") {
       return;
     }
 
@@ -59,7 +65,7 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
         data: parsed.data.content,
         timestamp: Date.now(),
       });
-      setContent("");
+      clearChatDraft(chatId);
     } catch (error) {
       stopWaiting();
       setSendError(error instanceof Error ? error.message : "Unable to send message");
@@ -77,7 +83,9 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
       setSendError(null);
       setIsRefiningPrompt(true);
       const response = await refinePrompt(prompt, accessToken);
-      setContent(response.refined_prompt);
+      if (chatId) {
+        setChatDraft(chatId, response.refined_prompt);
+      }
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Unable to refine prompt");
     } finally {
@@ -103,8 +111,12 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
           minRows={2}
           placeholder="Describe the task, the desired outcome, and any constraints the agent should respect."
           value={content}
-          onChange={(event) => setContent(event.target.value)}
-          disabled={!chatId || connectionStatus !== "Open"}
+          onChange={(event) => {
+            if (chatId) {
+              setChatDraft(chatId, event.target.value);
+            }
+          }}
+          disabled={!hasChat}
         />
 
         <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1.5}>
@@ -115,7 +127,7 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
                 color="inherit"
                 aria-label="Refine prompt"
                 onClick={() => void handleRefinePrompt()}
-                disabled={!content.trim() || isRefiningPrompt}
+                disabled={!hasChat || !content.trim() || isRefiningPrompt}
                 loading={isRefiningPrompt}
                 loadingPosition="start"
                 startIcon={<AutoFixHighRoundedIcon />}
@@ -178,7 +190,7 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
                 color="primary"
                 aria-label="Send message"
                 onClick={() => void submitMessage()}
-                disabled={!chatId || connectionStatus !== "Open"}
+                disabled={!canSend}
                 sx={{
                   border: "1px solid",
                   borderColor: "primary.main",
@@ -190,11 +202,24 @@ export function ChatInput({ chatId, token }: ChatInputProps) {
             </span>
           </Tooltip>
         </Stack>
-        {sendError ? (
-          <Typography variant="caption" color="error.main">
-            {sendError}
-          </Typography>
-        ) : null}
+        <Stack spacing={0.5}>
+          {sendError ? (
+            <Typography variant="caption" color="error.main">
+              {sendError}
+            </Typography>
+          ) : hasChat && connectionStatus !== "Open" ? (
+            <Typography variant="caption" color="text.secondary">
+              {connectionStatus === "Connecting"
+                ? "Connecting to the agent. You can type while the session opens."
+                : "The agent connection is not open yet. You can type, but sending is unavailable until it reconnects."}
+            </Typography>
+          ) : null}
+          {hasChat && controlMode === "agent" ? (
+            <Typography variant="caption" color="text.secondary">
+              Agent session: the agent keeps control, so approval cards will not appear.
+            </Typography>
+          ) : null}
+        </Stack>
       </Stack>
     </Paper>
   );

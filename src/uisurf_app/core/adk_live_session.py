@@ -133,26 +133,35 @@ class ADKLiveSession(ApplicationSession):
             await self._send_error_message(str(exc))
 
     async def _handle_runner_event(self, event: Event):
+        parts = event.content.parts if event.content and event.content.parts else []
+        timestamp_ms = self._to_message_timestamp(event.timestamp)
+
+        for part_index, part in enumerate(parts):
+            message_id = self._build_part_message_id(event, part_index)
+            if part.function_call:
+                await self._handle_function_call(part.function_call, message_id=message_id, timestamp_ms=timestamp_ms)
+            elif part.inline_data:
+                await self._handle_inline_data(part.inline_data, message_id=message_id, timestamp_ms=timestamp_ms)
+            elif part.function_response:
+                await self._handle_function_response(
+                    part.function_response,
+                    message_id=message_id,
+                    timestamp_ms=timestamp_ms,
+                )
+            elif part.executable_code:
+                logger.info("Received executable code part for user: %s", part.executable_code)
+            elif part.code_execution_result:
+                logger.info("Received code execution result for user: %s", part.code_execution_result)
+            elif part.text:
+                await self._handle_text(
+                    part.text,
+                    is_partial=event.partial,
+                    message_id=message_id,
+                    timestamp_ms=timestamp_ms,
+                )
+
         if event.turn_complete or event.interrupted:
             await self._handle_turn_end()
-            return
-
-        part: genai_types.Part = event.content.parts[0] if event.content and event.content.parts else None
-        if not part:
-            return
-
-        if part.function_call:
-            await self._handle_function_call(part.function_call)
-        elif part.inline_data:
-            await self._handle_inline_data(part.inline_data)
-        elif part.function_response:
-            await self._handle_function_response(part.function_response)
-        elif part.executable_code:
-            logger.info("Received executable code part for user: %s", part.executable_code)
-        elif part.code_execution_result:
-            logger.info("Received code execution result for user: %s", part.code_execution_result)
-        elif part.text:
-            await self._handle_text(part.text, is_partial=event.partial)
 
     async def shutdown(self):
         """
@@ -190,19 +199,49 @@ class ADKLiveSession(ApplicationSession):
             sender=MessageSender.SYSTEM
         ))
 
-    async def _handle_function_call(self, func_call: genai_types.FunctionCall):
+    def _build_part_message_id(self, event: Event, part_index: int) -> str:
+        if event.id:
+            return f"{event.id}:{part_index}"
+
+        timestamp_ms = self._to_message_timestamp(event.timestamp) or 0
+        author = "".join(
+            character if character.isalnum() or character in {"_", "-"} else "_"
+            for character in str(event.author or "unknown")
+        )
+        return f"evt_{timestamp_ms}_{author}:{part_index}"
+
+    def _to_message_timestamp(self, event_timestamp: float | int | None) -> int | None:
+        if event_timestamp is None:
+            return None
+        return int(float(event_timestamp) * 1000)
+
+    async def _handle_function_call(
+        self,
+        func_call: genai_types.FunctionCall,
+        *,
+        message_id: str | None = None,
+        timestamp_ms: int | None = None,
+    ):
         """
         Handles function call messages from the agent and sends them to the WebSocket client.
         :param func_call:
         :return:
         """
         await send_message(self._ws, Message(
+            id=message_id,
             type=MessageType.FUNCTION_CALL,
             sender=MessageSender.MODEL,
-            data=FunctionCallData(name=func_call.name, arguments=func_call.args or {})
+            data=FunctionCallData(name=func_call.name, arguments=func_call.args or {}),
+            timestamp=timestamp_ms,
         ))
 
-    async def _handle_inline_data(self, inline_data: genai_types.Blob):
+    async def _handle_inline_data(
+        self,
+        inline_data: genai_types.Blob,
+        *,
+        message_id: str | None = None,
+        timestamp_ms: int | None = None,
+    ):
         """
         Handles inline data messages from the agent and sends them to the WebSocket client.
         :param inline_data:
@@ -211,14 +250,23 @@ class ADKLiveSession(ApplicationSession):
         if inline_data.mime_type.startswith("audio/pcm"):
             audio_base64 = base64.b64encode(inline_data.data).decode('utf-8')
             await send_message(self._ws, Message(
+                id=message_id,
                 type=MessageType.AUDIO,
                 sender=MessageSender.MODEL,
-                data=AudioData(content=audio_base64, mime_type="application/json", speech_mode=SpeechMode.CONVERSATION)
+                data=AudioData(content=audio_base64, mime_type="application/json", speech_mode=SpeechMode.CONVERSATION),
+                timestamp=timestamp_ms,
             ))
         else:
             logger.warning("Received unsupported inline data type: %s", inline_data.mime_type)
 
-    async def _handle_text(self, text: str, is_partial: bool):
+    async def _handle_text(
+        self,
+        text: str,
+        is_partial: bool,
+        *,
+        message_id: str | None = None,
+        timestamp_ms: int | None = None,
+    ):
         """
         Handles text messages from the agent and sends them to the WebSocket client.
         :param text:
@@ -226,9 +274,11 @@ class ADKLiveSession(ApplicationSession):
         :return:
         """
         await send_message(self._ws, Message(
+            id=message_id,
             type=MessageType.TEXT,
             sender=MessageSender.MODEL,
-            data=text
+            data=text,
+            timestamp=timestamp_ms,
         ))
 
     async def _send_error_message(self, error_data: str):
@@ -243,7 +293,13 @@ class ADKLiveSession(ApplicationSession):
             data=error_data
         ))
 
-    async def _handle_function_response(self, function_response: genai_types.FunctionResponse):
+    async def _handle_function_response(
+        self,
+        function_response: genai_types.FunctionResponse,
+        *,
+        message_id: str | None = None,
+        timestamp_ms: int | None = None,
+    ):
         """
         Handles function response messages from the agent and sends them to the WebSocket client.
         :param function_response:
@@ -252,12 +308,14 @@ class ADKLiveSession(ApplicationSession):
         logger.info("Sending function response '%s'", function_response.name)
         logger.info(f"Function response data: {function_response.response}")
         await send_message(self._ws, Message(
+            id=message_id,
             type=MessageType.FUNCTION_RESPONSE,
             sender=MessageSender.MODEL,
             data=FunctionResponseData(
                 name=function_response.name,
                 response=function_response.response or ""
-            )
+            ),
+            timestamp=timestamp_ms,
         ))
 
 

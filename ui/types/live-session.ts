@@ -67,6 +67,7 @@ export type LiveSessionMessagePayload =
   | null;
 
 export type LiveSessionEnvelope = {
+  id?: string | null;
   type: LiveSessionMessageType;
   data?: LiveSessionMessagePayload;
   sender?: LiveSessionMessageSender;
@@ -87,6 +88,7 @@ export type AgentActivityStatus = "running" | "completed" | "failed";
 
 export type AgentActivityKind =
   | "function_call"
+  | "approval_required"
   | "function_response"
   | "message"
   | "thought"
@@ -104,18 +106,57 @@ export type AgentActivityModel = {
   functionName: string | null;
   taskId: string | null;
   contextId: string | null;
+  requiresConfirmation: boolean;
+  safetyAcknowledged: boolean;
+  confirmationReason: string | null;
   details: unknown;
   raw: unknown;
+};
+
+export type ApprovalRequestState = {
+  messageId: string;
+  approvalKey: string;
+  functionName: string | null;
+  explanation: string;
 };
 
 export function createLiveMessageId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function buildApprovalKey(
+  functionName: string | null,
+  explanation: string,
+  taskId?: string | null,
+  contextId?: string | null,
+  messageId?: string | null,
+) {
+  return [messageId ?? "", taskId ?? "", contextId ?? "", functionName ?? "", explanation.trim()].join("|");
+}
+
+export function parseApprovalPromptText(text: string): { functionName: string | null; explanation: string } | null {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const explicitPromptMatch = normalized.match(
+    /^confirmation required for\s+`?([^`\n.]+)`?\.\s*\n+\s*([\s\S]+?)\n+\s*reply\b/i,
+  );
+  if (!explicitPromptMatch) {
+    return null;
+  }
+
+  return {
+    functionName: explicitPromptMatch[1]?.trim() || null,
+    explanation: explicitPromptMatch[2].trim(),
+  };
+}
+
 export function createLiveChatMessage(
   chatId: string,
   message: LiveSessionEnvelope,
-  id = createLiveMessageId(message.type),
+  id = message.id ?? createLiveMessageId(message.type),
 ): LiveChatMessage {
   const createdAt = message.timestamp ? new Date(message.timestamp).toISOString() : new Date().toISOString();
   return {
@@ -140,19 +181,25 @@ export function isLiveSessionEnvelope(value: unknown): value is LiveSessionEnvel
 
 export function normalizeHistoryMessage(chatId: string, message: ChatMessage): LiveChatMessage {
   const sender: LiveSessionMessageSender =
-    message.role === "assistant" ? "model" : message.role === "user" ? "user" : "system";
+    message.sender ?? (message.role === "assistant" ? "model" : message.role === "user" ? "user" : "system");
+  const type = message.type ?? "text";
+  const data =
+    message.data ??
+    (type === "text"
+      ? {
+          content: message.content,
+          mime_type: "text/plain",
+        }
+      : message.content);
 
   return {
     id: message.id,
     chatId,
-    type: "text",
+    type,
     sender,
-    data: {
-      content: message.content,
-      mime_type: "text/plain",
-    },
+    data,
     createdAt: message.created_at,
-    status: null,
+    status: message.status ?? (type === "function_call" ? "running" : null),
   };
 }
 
@@ -160,11 +207,29 @@ export function getLiveMessageText(message: LiveChatMessage): string | null {
   const { data } = message;
 
   if (typeof data === "string") {
+    const structuredRecord = extractA2ARecord(data);
+    const structuredMessageText = structuredRecord ? extractDisplayTextFromA2AMessageRecord(structuredRecord) : null;
+    if (structuredMessageText) {
+      return structuredMessageText;
+    }
     return data;
   }
 
   if (data && typeof data === "object" && "content" in data && typeof data.content === "string") {
+    const structuredRecord = extractA2ARecord(data.content);
+    const structuredMessageText = structuredRecord ? extractDisplayTextFromA2AMessageRecord(structuredRecord) : null;
+    if (structuredMessageText) {
+      return structuredMessageText;
+    }
     return data.content;
+  }
+
+  const directStructuredRecord = extractA2ARecord(data);
+  if (directStructuredRecord) {
+    const structuredMessageText = extractDisplayTextFromA2AMessageRecord(directStructuredRecord);
+    if (structuredMessageText) {
+      return structuredMessageText;
+    }
   }
 
   return null;
@@ -215,6 +280,31 @@ function truncateText(value: string, maxLength = 220): string {
   return `${trimmed.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function getActivityTitle(
+  eventType: string | null,
+  functionName: string | null,
+  requiresConfirmation: boolean,
+  statusState: string | null,
+) {
+  if ((eventType === "function_call" || eventType === "approval_required") && requiresConfirmation) {
+    return "Approval required";
+  }
+
+  if ((eventType === "function_call" || eventType === "function_response") && functionName) {
+    return humanizeIdentifier(functionName);
+  }
+
+  if (eventType) {
+    return humanizeIdentifier(eventType);
+  }
+
+  if (statusState) {
+    return "Task update";
+  }
+
+  return "Agent activity";
+}
+
 function extractTextValue(value: unknown): string | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -255,6 +345,68 @@ function getStringField(record: Record<string, unknown>, keys: string[]): string
   }
 
   return null;
+}
+
+function getBooleanField(record: Record<string, unknown>, keys: string[]): boolean | null {
+  for (const key of keys) {
+    const candidate = record[key];
+    if (typeof candidate === "boolean") {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function extractSafetyState(value: unknown): {
+  requiresConfirmation: boolean;
+  explanation: string | null;
+  safetyAcknowledged: boolean;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      requiresConfirmation: false,
+      explanation: null,
+      safetyAcknowledged: false,
+    };
+  }
+
+  const safetyAcknowledged =
+    getBooleanField(record, [
+      "safety_acknowledged",
+      "safetyAcknowledged",
+      "safety_acknowledgement",
+      "safetyAcknowledgement",
+    ]) ?? false;
+
+  const safetyDecision =
+    asRecord(record.safety_decision) ??
+    asRecord(record.safetyDecision);
+  if (safetyDecision) {
+    const decision = getStringField(safetyDecision, ["decision"]);
+    return {
+      requiresConfirmation: decision === "require_confirmation",
+      explanation: getStringField(safetyDecision, ["explanation"]),
+      safetyAcknowledged,
+    };
+  }
+
+  const nestedArgs = asRecord(record.args) ?? asRecord(record.arguments);
+  if (nestedArgs) {
+    const nestedSafetyState = extractSafetyState(nestedArgs);
+    return {
+      requiresConfirmation: nestedSafetyState.requiresConfirmation,
+      explanation: nestedSafetyState.explanation,
+      safetyAcknowledged: safetyAcknowledged || nestedSafetyState.safetyAcknowledged,
+    };
+  }
+
+  return {
+    requiresConfirmation: false,
+    explanation: null,
+    safetyAcknowledged,
+  };
 }
 
 function normalizeAgentName(value: string): string {
@@ -429,10 +581,87 @@ function isA2ALikeRecord(value: unknown): value is Record<string, unknown> {
   );
 }
 
+function extractEmbeddedA2ARecordFromText(text: string): Record<string, unknown> | null {
+  let depth = 0;
+  let startIndex = -1;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      if (depth === 0) {
+        startIndex = index;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (char !== "}" || depth === 0) {
+      continue;
+    }
+
+    depth -= 1;
+    if (depth !== 0 || startIndex < 0) {
+      continue;
+    }
+
+    const candidate = text.slice(startIndex, index + 1);
+    const parsed = tryParseJsonValue(candidate);
+    if (isA2ALikeRecord(parsed)) {
+      return parsed;
+    }
+    startIndex = -1;
+  }
+
+  return null;
+}
+
+function extractDisplayTextFromA2AMessageRecord(record: Record<string, unknown>): string | null {
+  if (record.eventType !== "message") {
+    return null;
+  }
+
+  const payload = asRecord(record.payload);
+  return (
+    extractTextValue(payload) ??
+    extractTextValue(record.message) ??
+    extractTextValue(record.result)
+  );
+}
+
 function extractA2ARecord(value: unknown): Record<string, unknown> | null {
   const structured = toStructuredValue(value);
   if (isA2ALikeRecord(structured)) {
     return structured;
+  }
+
+  if (typeof value === "string") {
+    const embeddedRecord = extractEmbeddedA2ARecordFromText(value);
+    if (embeddedRecord) {
+      return embeddedRecord;
+    }
   }
 
   const record = asRecord(structured);
@@ -460,8 +689,14 @@ function buildSummaryFromA2ARecord(record: Record<string, unknown>, functionName
     extractTextValue(statusRecord?.message) ??
     extractTextValue(record.message) ??
     extractTextValue(record.result);
+  const safetyState = extractSafetyState(payload ?? record);
 
-  if (eventType === "function_call") {
+  if (eventType === "function_call" || eventType === "approval_required") {
+    if (safetyState.requiresConfirmation) {
+      return functionName
+        ? `The agent paused before ${humanizeIdentifier(functionName)}.`
+        : "The agent paused before running a remote function.";
+    }
     return functionName
       ? `Calling ${humanizeIdentifier(functionName)}.`
       : "Calling a remote function.";
@@ -518,6 +753,7 @@ function buildActivityFromA2ARecord(
     (statusRecord ? getStringField(statusRecord, ["contextId", "context_id"]) : null);
   const statusState = statusRecord ? getStringField(statusRecord, ["state"]) : null;
   const payloadText = extractTextValue(payload);
+  const safetyState = extractSafetyState(payload ?? record);
   const status =
     eventType === "function_call"
       ? "running"
@@ -532,6 +768,7 @@ function buildActivityFromA2ARecord(
     sourceType,
     kind:
       eventType === "function_call" ||
+      eventType === "approval_required" ||
       eventType === "function_response" ||
       eventType === "message" ||
       eventType === "thought"
@@ -540,12 +777,19 @@ function buildActivityFromA2ARecord(
           ? "task_update"
           : "unknown",
     status,
-    title: eventType ? humanizeIdentifier(eventType) : statusState ? "Task update" : "Agent activity",
+    title: getActivityTitle(eventType, functionName, safetyState.requiresConfirmation, statusState),
     summary: buildSummaryFromA2ARecord(record, functionName),
     agentName,
     functionName,
     taskId,
     contextId,
+    requiresConfirmation:
+      (eventType === "function_call" || eventType === "approval_required") && safetyState.requiresConfirmation,
+    safetyAcknowledged: safetyState.safetyAcknowledged,
+    confirmationReason:
+      eventType === "function_call" || eventType === "approval_required"
+        ? safetyState.explanation
+        : null,
     details: record,
     raw: record,
   };
@@ -565,6 +809,7 @@ export function getAgentActivityModel(
 
   if (message.type === "function_call" && message.data && typeof message.data === "object") {
     const data = message.data as FunctionCallData;
+    const safetyState = extractSafetyState(data.arguments);
     const details = {
       name: data.name,
       arguments: data.arguments,
@@ -574,12 +819,19 @@ export function getAgentActivityModel(
       sourceType: message.type,
       kind: "function_call",
       status: message.status ?? functionCallStatus,
-      title: "Function call",
-      summary: `Calling ${humanizeIdentifier(data.name)}.`,
-      agentName: inferAgentNameFromFunction(data.name, asRecord(details)),
+      title: getActivityTitle("function_call", data.name, safetyState.requiresConfirmation, null),
+      summary: safetyState.requiresConfirmation
+        ? `The agent paused before ${humanizeIdentifier(data.name)}.`
+        : `Calling ${humanizeIdentifier(data.name)}.`,
+      agentName:
+        guessAgentName(details, data.name) ??
+        inferAgentNameFromFunction(data.name, asRecord(details)),
       functionName: data.name,
       taskId: null,
       contextId: null,
+      requiresConfirmation: safetyState.requiresConfirmation,
+      safetyAcknowledged: safetyState.safetyAcknowledged,
+      confirmationReason: safetyState.explanation,
       details,
       raw: message.data,
     };
@@ -589,6 +841,9 @@ export function getAgentActivityModel(
     const data = message.data as FunctionResponseData;
     const nestedA2ARecord = extractA2ARecord(data.response);
     if (nestedA2ARecord) {
+      if (extractDisplayTextFromA2AMessageRecord(nestedA2ARecord)) {
+        return null;
+      }
       const model = buildActivityFromA2ARecord(nestedA2ARecord, message.type, "completed");
       return {
         ...model,
@@ -598,6 +853,7 @@ export function getAgentActivityModel(
     }
 
     const responseValue = toStructuredValue(data.response);
+    const safetyState = extractSafetyState(responseValue);
     const summaryText =
       extractTextValue(responseValue) ??
       `${humanizeIdentifier(data.name)} returned a response.`;
@@ -610,12 +866,17 @@ export function getAgentActivityModel(
       sourceType: message.type,
       kind: "function_response",
       status,
-      title: "Function response",
+      title: getActivityTitle("function_response", data.name, false, null),
       summary: truncateText(summaryText),
-      agentName: inferAgentNameFromFunction(data.name, asRecord(responseValue)),
+      agentName:
+        guessAgentName(responseValue, data.name) ??
+        inferAgentNameFromFunction(data.name, asRecord(responseValue)),
       functionName: data.name,
       taskId: null,
       contextId: null,
+      requiresConfirmation: false,
+      safetyAcknowledged: safetyState.safetyAcknowledged,
+      confirmationReason: null,
       details: {
         name: data.name,
         response: responseValue,
@@ -632,10 +893,15 @@ export function getAgentActivityModel(
       status: "running",
       title: "Function progress",
       summary: `${data.message} (${data.percentage}%)`,
-      agentName: inferAgentNameFromFunction(data.name, asRecord(data as unknown)),
+      agentName:
+        guessAgentName(data, data.name) ??
+        inferAgentNameFromFunction(data.name, asRecord(data as unknown)),
       functionName: data.name,
       taskId: null,
       contextId: null,
+      requiresConfirmation: false,
+      safetyAcknowledged: false,
+      confirmationReason: null,
       details: data,
       raw: data,
     };
@@ -658,6 +924,9 @@ export function getAgentActivityModel(
 
   const directA2ARecord = extractA2ARecord(message.data);
   if (directA2ARecord) {
+    if (extractDisplayTextFromA2AMessageRecord(directA2ARecord)) {
+      return null;
+    }
     const activity = buildActivityFromA2ARecord(directA2ARecord, message.type);
     if (activity.kind === "function_call" && message.status) {
       return {
@@ -669,4 +938,194 @@ export function getAgentActivityModel(
   }
 
   return null;
+}
+
+export function buildResolvedFunctionCallStatusById(messages: LiveChatMessage[]) {
+  const pendingCallIdsByName = new Map<string, string[]>();
+  const resolvedStatusById = new Map<string, AgentActivityStatus>();
+
+  for (const message of messages) {
+    const activity = getAgentActivityModel(message, message.status ?? "running");
+    if (!activity) {
+      continue;
+    }
+
+    if (activity.kind === "function_call") {
+      const currentStatus = message.status ?? activity.status;
+      if (currentStatus === "completed" || currentStatus === "failed") {
+        resolvedStatusById.set(message.id, currentStatus);
+        continue;
+      }
+
+      if (!activity.functionName) {
+        resolvedStatusById.set(message.id, currentStatus);
+        continue;
+      }
+
+      const queue = pendingCallIdsByName.get(activity.functionName) ?? [];
+      queue.push(message.id);
+      pendingCallIdsByName.set(activity.functionName, queue);
+      continue;
+    }
+
+    if (activity.kind !== "function_response" || !activity.functionName) {
+      continue;
+    }
+
+    const queue = pendingCallIdsByName.get(activity.functionName);
+    const targetCallId = queue?.shift();
+    if (!targetCallId) {
+      continue;
+    }
+
+    resolvedStatusById.set(targetCallId, activity.status);
+    if (!queue || queue.length === 0) {
+      pendingCallIdsByName.delete(activity.functionName);
+    }
+  }
+
+  return resolvedStatusById;
+}
+
+function isApprovalDecisionText(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "approve" || normalized === "cancel" || normalized === "yes" || normalized === "no";
+}
+
+function upsertPendingApproval(
+  pendingApprovals: ApprovalRequestState[],
+  approval: ApprovalRequestState,
+  dismissedApprovalKey: string | null,
+) {
+  for (let index = pendingApprovals.length - 1; index >= 0; index -= 1) {
+    const candidate = pendingApprovals[index];
+    if (!candidate) {
+      continue;
+    }
+
+    const sameApprovalKey = candidate.approvalKey === approval.approvalKey;
+    const sameLogicalApproval =
+      candidate.functionName === approval.functionName &&
+      candidate.explanation.trim() === approval.explanation.trim();
+
+    if (sameApprovalKey || sameLogicalApproval) {
+      pendingApprovals.splice(index, 1);
+    }
+  }
+
+  if (dismissedApprovalKey === approval.approvalKey) {
+    return;
+  }
+
+  pendingApprovals.push(approval);
+}
+
+function resolveLatestPendingApproval(pendingApprovals: ApprovalRequestState[]) {
+  pendingApprovals.pop();
+}
+
+function resolvePendingApprovalByFunctionName(
+  pendingApprovals: ApprovalRequestState[],
+  functionName: string | null,
+) {
+  if (!functionName) {
+    return;
+  }
+
+  for (let index = pendingApprovals.length - 1; index >= 0; index -= 1) {
+    if (pendingApprovals[index]?.functionName !== functionName) {
+      continue;
+    }
+
+    pendingApprovals.splice(index, 1);
+    return;
+  }
+}
+
+export function getActiveApprovalRequest(
+  messages: LiveChatMessage[],
+  chatId: string | null,
+  controlMode: "agent" | "manual" | null,
+  dismissedApprovalKey: string | null = null,
+): ApprovalRequestState | null {
+  if (controlMode !== "manual" || !chatId) {
+    return null;
+  }
+
+  const functionCallStatusById = buildResolvedFunctionCallStatusById(messages);
+  const pendingApprovals: ApprovalRequestState[] = [];
+
+  for (const message of messages) {
+    if (message.chatId !== chatId) {
+      continue;
+    }
+
+    const messageText = getLiveMessageText(message);
+    if (message.sender === "user" && message.type === "text" && messageText && isApprovalDecisionText(messageText)) {
+      resolveLatestPendingApproval(pendingApprovals);
+      continue;
+    }
+
+    const resolvedFunctionCallStatus =
+      message.type === "function_call"
+        ? functionCallStatusById.get(message.id) ?? message.status ?? "running"
+        : message.status ?? "running";
+    const activity = getAgentActivityModel(message, resolvedFunctionCallStatus);
+
+    if (
+      (activity?.kind === "function_call" || activity?.kind === "approval_required") &&
+      activity.requiresConfirmation
+    ) {
+      if (activity.status !== "running" || activity.safetyAcknowledged) {
+        resolvePendingApprovalByFunctionName(pendingApprovals, activity.functionName);
+        continue;
+      }
+
+      upsertPendingApproval(
+        pendingApprovals,
+        {
+          messageId: message.id,
+          approvalKey: buildApprovalKey(
+            activity.functionName,
+            activity.confirmationReason ?? "The agent is waiting for your approval before continuing.",
+            activity.taskId,
+            activity.contextId,
+            message.id,
+          ),
+          functionName: activity.functionName,
+          explanation:
+            activity.confirmationReason ?? "The agent is waiting for your approval before continuing.",
+        },
+        dismissedApprovalKey,
+      );
+      continue;
+    }
+
+    if (activity?.kind === "function_response") {
+      resolvePendingApprovalByFunctionName(pendingApprovals, activity.functionName);
+      continue;
+    }
+
+    if (message.sender !== "model" || message.type !== "text" || !messageText) {
+      continue;
+    }
+
+    const parsedPrompt = parseApprovalPromptText(messageText);
+    if (!parsedPrompt) {
+      continue;
+    }
+
+    upsertPendingApproval(
+      pendingApprovals,
+      {
+        messageId: message.id,
+        approvalKey: buildApprovalKey(parsedPrompt.functionName, parsedPrompt.explanation, null, null, message.id),
+        functionName: parsedPrompt.functionName,
+        explanation: parsedPrompt.explanation,
+      },
+      dismissedApprovalKey,
+    );
+  }
+
+  return pendingApprovals[pendingApprovals.length - 1] ?? null;
 }

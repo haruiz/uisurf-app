@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import { useSession } from "next-auth/react";
 
@@ -25,6 +25,28 @@ const MIN_LEFT_WIDTH = 260;
 const MAX_LEFT_WIDTH = 520;
 const MIN_RIGHT_WIDTH = 620;
 const MAX_RIGHT_WIDTH = 1200;
+const WEBSOCKET_TICKET_REFRESH_LEEWAY_MS = 30_000;
+
+type WebSocketTicketState = {
+  ticket: string;
+  expiresAt: string;
+};
+
+function isTicketExpiredOrExpiring(
+  ticketState: WebSocketTicketState | undefined,
+  leewayMs = WEBSOCKET_TICKET_REFRESH_LEEWAY_MS,
+) {
+  if (!ticketState) {
+    return true;
+  }
+
+  const expiresAtMs = Date.parse(ticketState.expiresAt);
+  if (Number.isNaN(expiresAtMs)) {
+    return true;
+  }
+
+  return expiresAtMs - Date.now() <= leewayMs;
+}
 
 export function WorkspaceShell({ token }: { token?: string }) {
   const { data: session } = useSession();
@@ -38,7 +60,8 @@ export function WorkspaceShell({ token }: { token?: string }) {
   const [leftWidth, setLeftWidth] = useState(LEFT_OPEN_WIDTH);
   const [rightWidth, setRightWidth] = useState(RIGHT_OPEN_WIDTH);
   const [activeResize, setActiveResize] = useState<ResizeTarget>(null);
-  const [wsTicket, setWsTicket] = useState<string | null>(null);
+  const [wsTicketByChatId, setWsTicketByChatId] = useState<Record<string, WebSocketTicketState | undefined>>({});
+  const pendingTicketChatIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!activeResize) {
@@ -79,39 +102,125 @@ export function WorkspaceShell({ token }: { token?: string }) {
   const clientAccessToken = useAccessToken();
   const accessToken = token ?? clientAccessToken ?? undefined;
   const chatSessionsQuery = useChatSessions(accessToken);
+  const sessions = chatSessionsQuery.data?.items ?? [];
   const selectedChat = chatSessionsQuery.data?.items.find((session) => session.id === selectedChatId) ?? null;
-  const socketUrl =
-    userId && selectedChatId && wsTicket
-      ? `${getWebSocketBaseUrl()}/${encodeURIComponent(userId)}/${encodeURIComponent(selectedChatId)}`
-      : null;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadWebSocketTicket() {
-      if (!selectedChatId || !accessToken) {
-        setWsTicket(null);
-        return;
-      }
-
-      try {
-        const response = await createWebSocketTicket(selectedChatId, accessToken);
-        if (!cancelled) {
-          setWsTicket(response.ticket);
-        }
-      } catch {
-        if (!cancelled) {
-          setWsTicket(null);
-        }
-      }
+  const requestWebSocketTicket = useCallback(async (chatId: string) => {
+    if (!accessToken || pendingTicketChatIdsRef.current.has(chatId)) {
+      return;
     }
 
-    void loadWebSocketTicket();
+    pendingTicketChatIdsRef.current.add(chatId);
+    try {
+      const response = await createWebSocketTicket(chatId, accessToken);
+      setWsTicketByChatId((current) => {
+        const currentTicket = current[chatId];
+        if (
+          currentTicket?.ticket === response.ticket &&
+          currentTicket.expiresAt === response.expires_at
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [chatId]: {
+            ticket: response.ticket,
+            expiresAt: response.expires_at,
+          },
+        };
+      });
+    } catch {
+      setWsTicketByChatId((current) => {
+        if (current[chatId] !== undefined) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [chatId]: undefined,
+        };
+      });
+    } finally {
+      pendingTicketChatIdsRef.current.delete(chatId);
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken || !userId) {
+      pendingTicketChatIdsRef.current.clear();
+      setWsTicketByChatId({});
+      return;
+    }
+
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    pendingTicketChatIdsRef.current.forEach((chatId) => {
+      if (!sessionIds.has(chatId)) {
+        pendingTicketChatIdsRef.current.delete(chatId);
+      }
+    });
+
+    setWsTicketByChatId((current) => {
+      const nextEntries = Object.entries(current).filter(([chatId]) => sessionIds.has(chatId));
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+
+    for (const session of sessions) {
+      if (wsTicketByChatId[session.id] || pendingTicketChatIdsRef.current.has(session.id)) {
+        continue;
+      }
+
+      void requestWebSocketTicket(session.id);
+    }
+  }, [accessToken, requestWebSocketTicket, sessions, userId, wsTicketByChatId]);
+
+  useEffect(() => {
+    if (!selectedChatId) {
+      return;
+    }
+
+    const selectedTicket = wsTicketByChatId[selectedChatId];
+    if (!selectedTicket || isTicketExpiredOrExpiring(selectedTicket)) {
+      void requestWebSocketTicket(selectedChatId);
+    }
+  }, [requestWebSocketTicket, selectedChatId, wsTicketByChatId]);
+
+  useEffect(() => {
+    if (!selectedChatId) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const selectedTicket = wsTicketByChatId[selectedChatId];
+      if (isTicketExpiredOrExpiring(selectedTicket)) {
+        void requestWebSocketTicket(selectedChatId);
+      }
+    }, 15_000);
 
     return () => {
-      cancelled = true;
+      window.clearInterval(timer);
     };
-  }, [accessToken, selectedChatId]);
+  }, [requestWebSocketTicket, selectedChatId, wsTicketByChatId]);
+
+  const socketConnections =
+    userId && accessToken
+      ? sessions.map((session) => ({
+          chatId: session.id,
+          controlMode: session.control_mode,
+          wsUrl: wsTicketByChatId[session.id]?.ticket
+            ? `${getWebSocketBaseUrl()}/${encodeURIComponent(userId)}/${encodeURIComponent(session.id)}`
+            : null,
+          ticketExpiresAt: wsTicketByChatId[session.id]?.expiresAt ?? null,
+          refreshTicket: () => requestWebSocketTicket(session.id),
+          params: {
+            ticket: wsTicketByChatId[session.id]?.ticket ?? null,
+            vnc_url: session.vnc_url ?? null,
+          },
+        }))
+      : [];
 
   const content = (
     <Box
@@ -175,6 +284,9 @@ export function WorkspaceShell({ token }: { token?: string }) {
         chatId={selectedChatId}
         viewerUrl={selectedChat?.vnc_url ?? null}
         viewerPending={selectedChat?.vnc_pending ?? false}
+        onRefreshRequest={() => {
+          void chatSessionsQuery.refetch();
+        }}
         onStatusChange={(status) => {
           if (!selectedChatId) {
             return;
@@ -186,8 +298,10 @@ export function WorkspaceShell({ token }: { token?: string }) {
   );
 
   return (
-    <WebSocketProvider wsUrl={socketUrl} params={{ ticket: wsTicket, vnc_url: selectedChat?.vnc_url ?? null }}>
-      {content}
+    <WebSocketProvider selectedChatId={selectedChatId} connections={socketConnections}>
+      <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
+        {content}
+      </Box>
     </WebSocketProvider>
   );
 }

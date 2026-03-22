@@ -19,16 +19,26 @@ class UiAgentSessionService:
     def enabled(self) -> bool:
         return bool(self._base_url)
 
-    async def create_session(self, session_id: str, auth_token: str | None) -> str | None:
+    @property
+    def control_mode(self) -> str:
+        return self._control_mode
+
+    async def create_session(
+        self,
+        session_id: str,
+        auth_token: str | None,
+        control_mode: str | None = None,
+    ) -> str | None:
         if not self.enabled or not auth_token:
             return None
+        selected_control_mode = control_mode or self._control_mode
         payload = await self._request(
             method="POST",
             path="/sessions/",
             auth_token=auth_token,
             body={
                 "session_id": session_id,
-                "control_mode": self._control_mode,
+                "control_mode": selected_control_mode,
             },
         )
         raw_vnc_url = payload.get("vncUrl")

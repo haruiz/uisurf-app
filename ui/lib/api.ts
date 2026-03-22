@@ -60,11 +60,14 @@ export async function getChatSessions(token?: string) {
   return request<{ items: ChatSession[] }>("/chats", { token });
 }
 
-export async function createChatSession(title: string, token?: string) {
+export async function createChatSession(
+  payload: { title: string; control_mode?: "agent" | "manual" | null },
+  token?: string,
+) {
   return request<ChatSession>("/chats", {
     method: "POST",
     token,
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(payload),
   });
 }
 

@@ -87,6 +87,7 @@ message_type_to_model: Dict[MessageType, typing.Type[BaseModel]] = {
 
 # --- Unified Message Schema ---
 class Message(BaseModel):
+    id: Optional[str] = None
     type: MessageType = MessageType.INFO
     data: MessageDataModel = None
     sender: MessageSender = MessageSender.SYSTEM

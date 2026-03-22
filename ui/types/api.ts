@@ -2,6 +2,7 @@ export type ChatSession = {
   id: string;
   owner_id: string;
   title: string;
+  control_mode: "agent" | "manual";
   vnc_url: string | null;
   vnc_pending: boolean;
   created_at: string;
@@ -15,11 +16,34 @@ export type ChatAttachment = {
   status: "pending" | "ready";
 };
 
+export type ChatMessageType =
+  | "error"
+  | "info"
+  | "debug"
+  | "warning"
+  | "turn_start"
+  | "turn_complete"
+  | "interrupted"
+  | "function_call"
+  | "function_response"
+  | "function_progress"
+  | "log"
+  | "audio"
+  | "text"
+  | "image";
+
+export type ChatMessageSender = "system" | "model" | "user";
+export type ChatMessageStatus = "running" | "completed" | "failed";
+
 export type ChatMessage = {
   id: string;
   chat_id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  sender?: ChatMessageSender | null;
+  type?: ChatMessageType;
+  data?: unknown;
+  status?: ChatMessageStatus | null;
   attachments: ChatAttachment[];
   created_at: string;
 };

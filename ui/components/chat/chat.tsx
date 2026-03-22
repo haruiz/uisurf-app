@@ -1,30 +1,32 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { Box, Paper, Stack, Typography } from "@mui/material";
+import { useEffect } from "react";
+import { Box, Chip, Paper, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useWebSocketContext } from "@/components/providers/websocket-provider";
+import { useChatSessions } from "@/hooks/use-chat-sessions";
 import { clearChatMessages, getChatMessages } from "@/lib/api";
 import { useChatStore } from "@/store/chat-store";
 import { useMessageStore } from "@/store/message-store";
 import {
   createLiveChatMessage,
   createLiveMessageId,
-  getAgentActivityModel,
-  isStructuredActivityPayload,
-  isLiveSessionEnvelope,
   normalizeHistoryMessage,
-  type LiveSessionEnvelope,
 } from "@/types/live-session";
 
 import { ChatHistory } from "./chat-history";
 import { ChatInput } from "./chat-input";
 import { ChatToolBox } from "./chat-toolbox";
 
+function getControlModeLabel(controlMode: "agent" | "manual") {
+  return controlMode === "manual" ? "Manual" : "Agent";
+}
+
 export function Chat({ token }: { token?: string }) {
   const { selectedChatId } = useChatStore();
-  const { connectionStatus, reconnect, lastJsonMessage, sendJsonMessage } = useWebSocketContext();
+  const { connectionStatus, reconnect, sendJsonMessage } = useWebSocketContext();
+  const sessionsQuery = useChatSessions(token);
   const queryClient = useQueryClient();
   const setCurrentChat = useMessageStore((state) => state.setCurrentChat);
   const setMessages = useMessageStore((state) => state.setMessages);
@@ -33,14 +35,9 @@ export function Chat({ token }: { token?: string }) {
   const clearMessages = useMessageStore((state) => state.clearMessages);
   const setSendError = useMessageStore((state) => state.setSendError);
   const addMessage = useMessageStore((state) => state.addMessage);
-  const startStreaming = useMessageStore((state) => state.startStreaming);
-  const appendLastMessage = useMessageStore((state) => state.appendLastMessage);
-  const stopStreaming = useMessageStore((state) => state.stopStreaming);
   const startWaiting = useMessageStore((state) => state.startWaiting);
-  const stopWaiting = useMessageStore((state) => state.stopWaiting);
-  const settlePendingFunctionCalls = useMessageStore((state) => state.settlePendingFunctionCalls);
-  const isStreaming = useMessageStore((state) => state.isStreaming);
-  const lastHandledMessageRef = useRef<unknown>(null);
+  const clearResolvedApprovalKey = useChatStore((state) => state.clearResolvedApprovalKey);
+  const selectedChat = sessionsQuery.data?.items.find((session) => session.id === selectedChatId) ?? null;
 
   useEffect(() => {
     setCurrentChat(selectedChatId);
@@ -48,6 +45,9 @@ export function Chat({ token }: { token?: string }) {
 
   async function handleClearMessages() {
     if (!selectedChatId || !token) {
+      if (selectedChatId) {
+        clearResolvedApprovalKey(selectedChatId);
+      }
       clearMessages();
       return;
     }
@@ -55,6 +55,7 @@ export function Chat({ token }: { token?: string }) {
     try {
       await clearChatMessages(selectedChatId, token);
       clearMessages();
+      clearResolvedApprovalKey(selectedChatId);
       void queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Unable to clear chat history");
@@ -122,143 +123,6 @@ export function Chat({ token }: { token?: string }) {
     };
   }, [clearMessages, selectedChatId, setMessages, setSendError, startLoadingHistory, stopLoadingHistory, token]);
 
-  useEffect(() => {
-    if (!selectedChatId || !isLiveSessionEnvelope(lastJsonMessage)) {
-      return;
-    }
-
-    if (lastHandledMessageRef.current === lastJsonMessage) {
-      return;
-    }
-    lastHandledMessageRef.current = lastJsonMessage;
-
-    const payload = lastJsonMessage as LiveSessionEnvelope;
-
-    if (payload.type === "text" && payload.sender === "model") {
-      const content =
-        typeof payload.data === "string"
-          ? payload.data
-          : payload.data && typeof payload.data === "object" && "content" in payload.data
-            ? String(payload.data.content ?? "")
-            : "";
-
-      if (!content) {
-        return;
-      }
-
-      if (isStructuredActivityPayload(content)) {
-        stopStreaming();
-        stopWaiting();
-        const activityMessage = createLiveChatMessage(
-          selectedChatId,
-          {
-            ...payload,
-            data: {
-              content,
-              mime_type: "application/json",
-            },
-          },
-          createLiveMessageId("model_activity"),
-        );
-        addMessage(activityMessage);
-        const activity = getAgentActivityModel(activityMessage);
-        if (activity?.kind === "function_response") {
-          settlePendingFunctionCalls(activity.status, activity.functionName);
-        }
-        return;
-      }
-
-      if (!isStreaming) {
-        startStreaming(
-          createLiveChatMessage(
-            selectedChatId,
-            {
-              ...payload,
-              data: {
-                content,
-                mime_type: "text/plain",
-              },
-            },
-            createLiveMessageId("model_text"),
-          ),
-        );
-      } else {
-        appendLastMessage(content);
-      }
-      return;
-    }
-
-    if (payload.type === "turn_complete") {
-      stopStreaming();
-      stopWaiting();
-      return;
-    }
-
-    if (payload.type === "turn_start") {
-      setSendError(null);
-      return;
-    }
-
-    if (payload.type === "debug") {
-      if (isStructuredActivityPayload(payload.data)) {
-        stopStreaming();
-        const activityMessage = createLiveChatMessage(
-          selectedChatId,
-          payload,
-          createLiveMessageId("debug_activity"),
-        );
-        addMessage(activityMessage);
-        const activity = getAgentActivityModel(activityMessage);
-        if (activity?.kind === "function_response") {
-          settlePendingFunctionCalls(activity.status, activity.functionName);
-        }
-      }
-      return;
-    }
-
-    if (payload.type === "error") {
-      const text =
-        typeof payload.data === "string"
-          ? payload.data
-          : payload.data && typeof payload.data === "object" && "content" in payload.data
-            ? String(payload.data.content ?? "")
-            : "An unexpected error occurred";
-      setSendError(text);
-      addMessage(createLiveChatMessage(selectedChatId, payload));
-      settlePendingFunctionCalls("failed");
-      stopStreaming();
-      stopWaiting();
-      return;
-    }
-
-    const liveMessage = createLiveChatMessage(selectedChatId, payload);
-    addMessage(liveMessage);
-    const activity = getAgentActivityModel(liveMessage);
-    if (activity?.kind === "function_response") {
-      settlePendingFunctionCalls(activity.status, activity.functionName);
-    }
-
-    if (payload.type !== "info") {
-      setSendError(null);
-    }
-
-    if (payload.type === "function_response") {
-      stopWaiting();
-    }
-  }, [
-    addMessage,
-    appendLastMessage,
-    isStreaming,
-    lastJsonMessage,
-    selectedChatId,
-    setSendError,
-    startStreaming,
-    startWaiting,
-    stopStreaming,
-    stopWaiting,
-    settlePendingFunctionCalls,
-  ]);
-
   return (
     <Box sx={{ display: "flex", height: "100%", minHeight: 0, flexDirection: "column", gap: 2 }}>
       <Paper
@@ -279,9 +143,27 @@ export function Chat({ token }: { token?: string }) {
             <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.18em" }}>
               Conversation
             </Typography>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-              Agent chat
-            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+              <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                Agent chat
+              </Typography>
+              {selectedChat ? (
+                <Chip
+                  size="small"
+                  label={`${getControlModeLabel(selectedChat.control_mode)} session`}
+                  color={selectedChat.control_mode === "manual" ? "warning" : "success"}
+                  variant="outlined"
+                  sx={{ fontWeight: 700 }}
+                />
+              ) : null}
+            </Stack>
+            {selectedChat ? (
+              <Typography variant="body2" color="text.secondary">
+                {selectedChat.control_mode === "manual"
+                  ? "Manual mode: approval cards appear in the conversation when the browser or desktop agent pauses for confirmation."
+                  : "Agent mode: confirmations are auto-approved, so no approval card is expected in this session."}
+              </Typography>
+            ) : null}
           </Box>
 
           <ChatToolBox
@@ -293,6 +175,7 @@ export function Chat({ token }: { token?: string }) {
           <Box sx={{ flex: 1, minHeight: 0 }}>
             <ChatHistory
               chatId={selectedChatId}
+              controlMode={selectedChat?.control_mode ?? null}
               onResendMessage={handleResendMessage}
               canResend={connectionStatus === "Open"}
             />
@@ -300,7 +183,7 @@ export function Chat({ token }: { token?: string }) {
         </Stack>
       </Paper>
 
-      <ChatInput chatId={selectedChatId} token={token} />
+      <ChatInput chatId={selectedChatId} token={token} controlMode={selectedChat?.control_mode ?? null} />
     </Box>
   );
 }

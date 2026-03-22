@@ -1,35 +1,87 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import ChatBubbleOutlineRoundedIcon from "@mui/icons-material/ChatBubbleOutlineRounded";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import KeyboardDoubleArrowLeftRoundedIcon from "@mui/icons-material/KeyboardDoubleArrowLeftRounded";
 import KeyboardDoubleArrowRightRoundedIcon from "@mui/icons-material/KeyboardDoubleArrowRightRounded";
+import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import {
   Box,
   CircularProgress,
-  Divider,
-  IconButton,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Paper,
-  Stack,
-  Tooltip,
-  Typography,
+    Divider,
+    IconButton,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
+    Menu,
+    MenuItem,
+    Paper,
+    Stack,
+    Tooltip,
+    Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 
 import { useCreateChatSession, useDeleteChatSession, useChatSessions } from "@/hooks/use-chat-sessions";
-import { useChatStore } from "@/store/chat-store";
+import { useChatStore, type SessionAgentState } from "@/store/chat-store";
+
+function SessionStatusBadge({ state }: { state: SessionAgentState }) {
+  return (
+    <Box
+      sx={(theme) => ({
+        position: "absolute",
+        right: -4,
+        bottom: -4,
+        width: 18,
+        height: 18,
+        borderRadius: 999,
+        border: "2px solid",
+        borderColor: theme.palette.background.paper,
+        bgcolor:
+          state === "approval_required"
+            ? theme.palette.warning.main
+            : state === "working"
+              ? alpha(theme.palette.info.main, 0.14)
+              : theme.palette.success.main,
+        color:
+          state === "approval_required"
+            ? theme.palette.warning.contrastText
+            : state === "working"
+              ? theme.palette.info.main
+              : theme.palette.success.contrastText,
+        display: "grid",
+        placeItems: "center",
+        boxShadow: theme.shadows[1],
+      })}
+    >
+      {state === "approval_required" ? (
+        <WarningAmberRoundedIcon sx={{ fontSize: 12 }} />
+      ) : state === "working" ? (
+        <CircularProgress size={10} thickness={6} color="inherit" />
+      ) : (
+        <CheckCircleRoundedIcon sx={{ fontSize: 12 }} />
+      )}
+    </Box>
+  );
+}
 
 export function ChatSidebar({ token }: { token?: string }) {
-  const { selectedChatId, setSelectedChatId, sidebarOpen, toggleSidebar, loadingViewerChatIds } = useChatStore();
+  const {
+    selectedChatId,
+    setSelectedChatId,
+    sidebarOpen,
+    toggleSidebar,
+    loadingViewerChatIds,
+    sessionAgentStateById,
+  } = useChatStore();
   const sessionsQuery = useChatSessions(token);
   const createSession = useCreateChatSession(token);
   const deleteSession = useDeleteChatSession(token);
+  const [createMenuAnchor, setCreateMenuAnchor] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     const sessions = sessionsQuery.data?.items ?? [];
@@ -45,6 +97,22 @@ export function ChatSidebar({ token }: { token?: string }) {
       setSelectedChatId(sessions[0].id);
     }
   }, [selectedChatId, sessionsQuery.data?.items, setSelectedChatId]);
+
+  function handleOpenCreateMenu(event: MouseEvent<HTMLElement>) {
+    setCreateMenuAnchor(event.currentTarget);
+  }
+
+  function handleCloseCreateMenu() {
+    setCreateMenuAnchor(null);
+  }
+
+  function handleCreateSession(controlMode: "agent" | "manual") {
+    createSession.mutate({
+      title: `New session ${new Date().toLocaleTimeString()}`,
+      control_mode: controlMode,
+    });
+    handleCloseCreateMenu();
+  }
 
   return (
     <Paper
@@ -117,7 +185,7 @@ export function ChatSidebar({ token }: { token?: string }) {
             <Tooltip title="New chat">
               <IconButton
                 color="primary"
-                onClick={() => createSession.mutate(`New session ${new Date().toLocaleTimeString()}`)}
+                onClick={handleOpenCreateMenu}
                 sx={{
                   width: 40,
                   height: 40,
@@ -129,6 +197,26 @@ export function ChatSidebar({ token }: { token?: string }) {
                 <AddRoundedIcon fontSize="small" />
               </IconButton>
             </Tooltip>
+            <Menu
+              anchorEl={createMenuAnchor}
+              open={Boolean(createMenuAnchor)}
+              onClose={handleCloseCreateMenu}
+              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+              transformOrigin={{ vertical: "top", horizontal: "right" }}
+            >
+              <MenuItem onClick={() => handleCreateSession("agent")}>
+                <ListItemText
+                  primary="Agent session"
+                  secondary="The agent proceeds automatically."
+                />
+              </MenuItem>
+              <MenuItem onClick={() => handleCreateSession("manual")}>
+                <ListItemText
+                  primary="Manual session"
+                  secondary="The user confirms sensitive steps."
+                />
+              </MenuItem>
+            </Menu>
           </>
         ) : (
           <IconButton color="primary">
@@ -141,23 +229,39 @@ export function ChatSidebar({ token }: { token?: string }) {
 
       {!sidebarOpen ? (
         <Stack spacing={1.5} alignItems="center">
-          {sessionsQuery.data?.items.map((session) => (
-            <IconButton
+          {sessionsQuery.data?.items.map((session) => {
+            const sessionAgentState = sessionAgentStateById[session.id];
+            return (
+            <Tooltip
               key={session.id}
-              color={session.id === selectedChatId ? "primary" : "default"}
-              onClick={() => setSelectedChatId(session.id)}
-              sx={{
-                width: 48,
-                height: 48,
-                border: "1px solid",
-                borderColor: session.id === selectedChatId ? "primary.main" : "divider",
-                bgcolor: (theme) =>
-                  session.id === selectedChatId ? alpha(theme.palette.primary.main, 0.12) : "transparent",
-              }}
+              title={session.title}
             >
-              {loadingViewerChatIds.includes(session.id) ? <CircularProgress size={16} /> : <ChatBubbleOutlineRoundedIcon fontSize="small" />}
-            </IconButton>
-          ))}
+              <IconButton
+                color={session.id === selectedChatId ? "primary" : "default"}
+                onClick={() => setSelectedChatId(session.id)}
+                sx={{
+                  width: 48,
+                  height: 48,
+                  border: "1px solid",
+                  borderColor: session.id === selectedChatId ? "primary.main" : "divider",
+                  bgcolor: (theme) =>
+                    session.id === selectedChatId ? alpha(theme.palette.primary.main, 0.12) : "transparent",
+                }}
+              >
+                <Box sx={{ position: "relative", display: "grid", placeItems: "center" }}>
+                  {loadingViewerChatIds.includes(session.id) ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <>
+                      <ChatBubbleOutlineRoundedIcon fontSize="small" />
+                      {sessionAgentState ? <SessionStatusBadge state={sessionAgentState} /> : null}
+                    </>
+                  )}
+                </Box>
+              </IconButton>
+            </Tooltip>
+            );
+          })}
         </Stack>
       ) : sessionsQuery.isLoading ? (
         <Box sx={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -182,6 +286,7 @@ export function ChatSidebar({ token }: { token?: string }) {
           ) : null}
           {sessionsQuery.data?.items.map((session) => {
             const viewerLoading = loadingViewerChatIds.includes(session.id);
+            const sessionAgentState = sessionAgentStateById[session.id];
             return (
             <Box
               key={session.id}
@@ -211,15 +316,18 @@ export function ChatSidebar({ token }: { token?: string }) {
                   <ListItemIcon sx={{ minWidth: 44 }}>
                     <Box
                       sx={{
+                        position: "relative",
                         width: 36,
-                      height: 36,
-                      borderRadius: 1,
-                      display: "grid",
-                      placeItems: "center",
-                      bgcolor: (theme) => alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.04 : 0.06),
-                    }}
-                  >
+                        height: 36,
+                        borderRadius: 1,
+                        display: "grid",
+                        placeItems: "center",
+                        bgcolor: (theme) =>
+                          alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.04 : 0.06),
+                      }}
+                    >
                       <ChatBubbleOutlineRoundedIcon fontSize="small" />
+                      {!viewerLoading && sessionAgentState ? <SessionStatusBadge state={sessionAgentState} /> : null}
                     </Box>
                   </ListItemIcon>
                   <ListItemText

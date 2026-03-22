@@ -3,29 +3,24 @@
 import { Box, CircularProgress, Paper, Skeleton, Stack, Typography } from "@mui/material";
 
 import { useMessageStore } from "@/store/message-store";
-import type { AgentActivityStatus, LiveChatMessage } from "@/types/live-session";
-import { getAgentActivityModel, getLiveMessageText } from "@/types/live-session";
+import { buildResolvedFunctionCallStatusById, getAgentActivityModel, getLiveMessageText } from "@/types/live-session";
 
+import { ApprovalAlert } from "./approval-alert";
 import { ChatMessage } from "./chat-message";
 
 type ChatHistoryProps = {
   chatId: string | null;
+  controlMode?: "agent" | "manual" | null;
   onResendMessage?: (messageText: string) => void;
   canResend?: boolean;
 };
 
-export function ChatHistory({ chatId, onResendMessage, canResend = false }: ChatHistoryProps) {
+export function ChatHistory({ chatId, controlMode = null, onResendMessage, canResend = false }: ChatHistoryProps) {
   const messages = useMessageStore((state) => state.messages);
   const isLoadingHistory = useMessageStore((state) => state.isLoadingHistory);
   const isWaitingForResponse = useMessageStore((state) => state.isWaitingForResponse);
-  const functionStatusByName = new Map<string, AgentActivityStatus>();
-  for (const message of messages) {
-    const activity = getAgentActivityModel(message);
-    if (!activity?.functionName || activity.kind !== "function_response") {
-      continue;
-    }
-    functionStatusByName.set(activity.functionName, activity.status);
-  }
+  const functionCallStatusById = buildResolvedFunctionCallStatusById(messages);
+  const visibleMessages = messages;
   const latestUserTextMessageId =
     [...messages]
       .reverse()
@@ -140,11 +135,11 @@ export function ChatHistory({ chatId, onResendMessage, canResend = false }: Chat
       }}
     >
       <Stack spacing={2} sx={{ minHeight: "100%" }}>
-        {messages.map((message) => {
+        {visibleMessages.map((message) => {
           const activity = getAgentActivityModel(message);
           const resolvedFunctionCallStatus =
-            activity?.kind === "function_call" && activity.functionName
-              ? functionStatusByName.get(activity.functionName) ?? message.status ?? "running"
+            activity?.kind === "function_call"
+              ? functionCallStatusById.get(message.id) ?? message.status ?? activity.status
               : message.status ?? "running";
 
           return (
@@ -166,6 +161,7 @@ export function ChatHistory({ chatId, onResendMessage, canResend = false }: Chat
             />
           );
         })}
+        <ApprovalAlert controlMode={controlMode} />
         {isWaitingForResponse ? (
           <Paper
             elevation={0}

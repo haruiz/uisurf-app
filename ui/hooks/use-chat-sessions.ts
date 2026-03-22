@@ -21,7 +21,8 @@ export function useCreateChatSession(token?: string) {
   const setViewerLoading = useChatStore((state) => state.setViewerLoading);
 
   return useMutation({
-    mutationFn: (title: string) => createChatSession(title, token),
+    mutationFn: (payload: { title: string; control_mode?: "agent" | "manual" | null }) =>
+      createChatSession(payload, token),
     onSuccess: (session) => {
       setSelectedChatId(session.id);
       if (session.vnc_url || session.vnc_pending) {
@@ -37,6 +38,9 @@ export function useDeleteChatSession(token?: string) {
   const selectedChatId = useChatStore((state) => state.selectedChatId);
   const setSelectedChatId = useChatStore((state) => state.setSelectedChatId);
   const clearViewerLoading = useChatStore((state) => state.clearViewerLoading);
+  const clearChatDraft = useChatStore((state) => state.clearChatDraft);
+  const clearSessionAgentState = useChatStore((state) => state.clearSessionAgentState);
+  const clearResolvedApprovalKey = useChatStore((state) => state.clearResolvedApprovalKey);
 
   return useMutation({
     mutationFn: (chatId: string) => deleteChatSession(chatId, token),
@@ -45,6 +49,9 @@ export function useDeleteChatSession(token?: string) {
         setSelectedChatId(null);
       }
       clearViewerLoading(chatId);
+      clearChatDraft(chatId);
+      clearSessionAgentState(chatId);
+      clearResolvedApprovalKey(chatId);
       void queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
       void queryClient.invalidateQueries({ queryKey: ["messages"] });
     },

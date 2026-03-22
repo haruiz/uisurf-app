@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from functools import lru_cache
+from typing import Any
 from uuid import uuid4
 
 from google.adk.events.event import Event
@@ -59,12 +60,18 @@ class ChatService:
         auth_token: str | None = None,
     ) -> ChatSessionResponse:
         now = datetime.now(UTC)
+        control_mode = (
+            payload.control_mode
+            if payload.control_mode in {"agent", "manual"}
+            else self._ui_agent_session_service.control_mode
+        )
         create_kwargs = {
             "app_name": self._app_name,
             "user_id": owner_id,
             "state": {
                 "title": payload.title,
                 "created_at": now.isoformat(),
+                "control_mode": control_mode,
             },
         }
         if not get_settings().use_vertex_ai_session_service:
@@ -79,6 +86,7 @@ class ChatService:
                     owner_id=owner_id,
                     session_id=session.id,
                     auth_token=auth_token,
+                    control_mode=control_mode,
                 )
             )
         vnc_record = await self._chat_vnc_session_service.get(owner_id, session.id)
@@ -155,6 +163,12 @@ class ChatService:
             id=f"msg_{uuid4().hex[:10]}",
             chat_id=chat_id,
             role=payload.role,
+            sender=self._sender_from_role(payload.role),
+            type="text",
+            data={
+                "content": payload.content,
+                "mime_type": "text/plain",
+            },
             content=payload.content,
             attachments=payload.attachments,
             created_at=datetime.now(UTC),
@@ -193,38 +207,168 @@ class ChatService:
             if cleared_at is not None and event.timestamp <= cleared_at.timestamp():
                 continue
 
-            text_parts = [part.text for part in event.content.parts if getattr(part, "text", None)]
-            if not text_parts:
-                continue
-
-            content = "".join(text_parts).strip()
-            if not content:
-                continue
-
-            role = "user" if event.author == "user" else "assistant"
+            role = self._role_from_author(event.author)
+            sender = self._sender_from_author(event.author)
             created_at = datetime.fromtimestamp(event.timestamp, tz=UTC)
+            event_id = self._build_event_message_id(event)
 
-            messages.append(
-                MessageResponse(
-                    id=event.id or f"evt_{uuid4().hex[:10]}",
+            for part_index, part in enumerate(event.content.parts):
+                message = self._map_persisted_part(
                     chat_id=session.id,
+                    event_id=event_id,
+                    part_index=part_index,
+                    part=part,
                     role=role,
+                    sender=sender,
+                    created_at=created_at,
+                )
+                if message is not None:
+                    messages.append(message)
+
+        return messages
+
+    def _map_persisted_part(
+        self,
+        *,
+        chat_id: str,
+        event_id: str,
+        part_index: int,
+        part: Any,
+        role: str,
+        sender: str,
+        created_at: datetime,
+    ) -> MessageResponse | None:
+        message_id = f"{event_id}:{part_index}"
+        text = getattr(part, "text", None)
+        if isinstance(text, str):
+            content = text.strip()
+            if content:
+                return MessageResponse(
+                    id=message_id,
+                    chat_id=chat_id,
+                    role=role,
+                    sender=sender,
+                    type="text",
+                    data={
+                        "content": content,
+                        "mime_type": "text/plain",
+                    },
                     content=content,
                     attachments=[],
                     created_at=created_at,
                 )
+
+        function_call = getattr(part, "function_call", None)
+        if function_call is not None:
+            function_name = getattr(function_call, "name", "").strip() or "function_call"
+            arguments = getattr(function_call, "args", None) or {}
+            return MessageResponse(
+                id=message_id,
+                chat_id=chat_id,
+                role=role,
+                sender=sender,
+                type="function_call",
+                data={
+                    "name": function_name,
+                    "arguments": arguments,
+                },
+                status="running",
+                content=f"Calling {function_name}.",
+                attachments=[],
+                created_at=created_at,
             )
 
-        return messages
+        function_response = getattr(part, "function_response", None)
+        if function_response is not None:
+            function_name = getattr(function_response, "name", "").strip() or "function_response"
+            response = getattr(function_response, "response", None)
+            return MessageResponse(
+                id=message_id,
+                chat_id=chat_id,
+                role=role,
+                sender=sender,
+                type="function_response",
+                data={
+                    "name": function_name,
+                    "response": response,
+                },
+                status=self._infer_response_status(response),
+                content=self._summarize_function_response(function_name, response),
+                attachments=[],
+                created_at=created_at,
+            )
+
+        return None
+
+    def _build_event_message_id(self, event: Event) -> str:
+        if event.id:
+            return event.id
+
+        timestamp_ms = int((event.timestamp or 0) * 1000)
+        author = "".join(
+            character if character.isalnum() or character in {"_", "-"} else "_"
+            for character in str(event.author or "unknown")
+        )
+        return f"evt_{timestamp_ms}_{author}"
+
+    def _summarize_function_response(self, function_name: str, response: Any) -> str:
+        if isinstance(response, str):
+            content = response.strip()
+            if content:
+                return content
+
+        if isinstance(response, dict):
+            for key in ("message", "result", "response", "detail", "error", "error_message"):
+                value = response.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        return f"{function_name} returned a response."
+
+    def _infer_response_status(self, response: Any) -> str | None:
+        summary = self._summarize_function_response("function", response).lower()
+        if any(token in summary for token in ("fail", "error", "cancel", "denied")):
+            return "failed"
+        if any(token in summary for token in ("complete", "done", "success", "finished", "final")):
+            return "completed"
+        return None
+
+    def _role_from_author(self, author: str | None) -> str:
+        if author == "user":
+            return "user"
+        if author == "system":
+            return "system"
+        return "assistant"
+
+    def _sender_from_author(self, author: str | None) -> str:
+        if author == "user":
+            return "user"
+        if author == "system":
+            return "system"
+        return "model"
+
+    def _sender_from_role(self, role: str) -> str:
+        if role == "user":
+            return "user"
+        if role == "system":
+            return "system"
+        return "model"
 
     def _map_session(self, session: Session, owner_id: str, vnc_record=None) -> ChatSessionResponse:
         created_at = self._parse_created_at(session)
         updated_at = datetime.fromtimestamp(session.last_update_time or created_at.timestamp(), tz=UTC)
         title = str(session.state.get("title") or "Untitled session")
+        raw_control_mode = session.state.get("control_mode")
+        control_mode = (
+            raw_control_mode
+            if raw_control_mode in {"agent", "manual"}
+            else self._ui_agent_session_service.control_mode
+        )
         return ChatSessionResponse(
             id=session.id,
             owner_id=session.user_id,
             title=title,
+            control_mode=control_mode,
             vnc_url=vnc_record.vnc_url if vnc_record else None,
             vnc_pending=bool(vnc_record and vnc_record.status == "pending"),
             created_at=created_at,
@@ -255,11 +399,18 @@ class ChatService:
         except ValueError:
             return None
 
-    async def _provision_vnc_session(self, owner_id: str, session_id: str, auth_token: str) -> None:
+    async def _provision_vnc_session(
+        self,
+        owner_id: str,
+        session_id: str,
+        auth_token: str,
+        control_mode: str,
+    ) -> None:
         try:
             vnc_url = await self._ui_agent_session_service.create_session(
                 session_id=session_id,
                 auth_token=auth_token,
+                control_mode=control_mode,
             )
             if vnc_url:
                 await self._chat_vnc_session_service.set_ready(owner_id, session_id, vnc_url)
